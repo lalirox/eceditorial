@@ -22,13 +22,19 @@
             "ssr": {
               "entry": "src/server.ts"
             },
-            "tsConfig": "tsconfig.json"
+            "tsConfig": "tsconfig.json",
+            "assets": [
+              {
+                "glob": "index.css",
+                "input": ".",
+                "output": "/"
+              }
+            ]
           },
           "configurations": {
             "production": {
               "outputHashing": "all",
               "externalDependencies": [
-                "@google/genai",
                 "express",
                 "node-domexception"
               ]
@@ -38,7 +44,6 @@
               "extractLicenses": false,
               "sourceMap": true,
               "externalDependencies": [
-                "@google/genai",
                 "express",
                 "node-domexception"
               ]

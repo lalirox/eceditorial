@@ -3,6 +3,8 @@
   "description": "A specialized assistant for generating viral, gossip-style news summaries for Mexican WhatsApp channels based on specific editorial guidelines.",
   "requestFramePermissions": [],
   "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+    "SERVER_SIDE_FREE_AI_POLLINATIONS",
+    "LOCAL_OLLAMA_OPTIONAL",
+    "GOOGLE_NEWS_RSS_RESEARCH"
   ]
 }

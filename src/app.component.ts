@@ -280,17 +280,17 @@ interface NewsItem {
       <section class="mb-12 animate-in fade-in duration-700 relative" data-agent-id="permission-denied-view">
         <div class="flex flex-col items-center justify-center text-center p-6 sm:p-8 bg-neutral-900/90 backdrop-blur-md rounded-2xl border border-red-500/30 shadow-[0_0_50px_rgba(239,68,68,0.15)] max-w-2xl mx-auto">
           <div class="text-5xl mb-4">🔒</div>
-          <h3 class="text-2xl font-bold text-red-400 mb-2 font-mono tracking-tight">Permiso Denegado (Error 403)</h3>
+          <h3 class="text-2xl font-bold text-red-400 mb-2 font-mono tracking-tight">Servicio de IA no disponible</h3>
           <p class="text-neutral-300 mb-6 font-medium text-base leading-relaxed max-w-md">
-            La clave de API utilizada no tiene permisos para realizar llamadas a la API de Gemini o el proyecto no tiene habilitada la API.
+            No se pudo conectar con el proveedor de IA gratuito. La app no usa Google ni cobra por las llamadas.
           </p>
           <div class="bg-black/60 rounded-xl p-5 mb-6 border border-neutral-800 text-left w-full max-w-lg">
             <h4 class="text-red-300 font-bold text-sm mb-2">Posibles soluciones:</h4>
             <ol class="list-decimal list-inside text-xs text-neutral-400 space-y-2.5">
-              <li>Verifica que la <strong>Generative Language API</strong> esté habilitada en tu Google Cloud Console.</li>
-              <li>Si tu API Key tiene restricciones de API, asegúrate de permitir <em>Generative Language API</em>.</li>
-              <li>Genera una nueva API Key en <a href="https://aistudio.google.com/apikey" target="_blank" referrerpolicy="no-referrer" class="text-red-400 hover:underline font-bold">Google AI Studio</a>.</li>
-              <li>Configura la clave en el menú de <em>Settings &gt; Secrets</em> o en tu entorno como <code class="text-red-300">GEMINI_API_KEY</code>.</li>
+              <li>Revisa la conexión a internet y vuelve a intentar.</li>
+              <li>Espera unos segundos: la cuota gratuita limita una respuesta cada 30 segundos.</li>
+              <li>Opcional: agrega una clave gratis de Groq en <code class="text-red-300">GROQ_API_KEY</code> para más velocidad.</li>
+              <li>Opcional: configura Ollama local en <code class="text-red-300">OLLAMA_MODEL</code> para funcionar sin internet.</li>
             </ol>
           </div>
           <button (click)="generate()" data-agent-id="btn-retry-permission" class="px-6 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg transition-colors shadow-lg shadow-red-900/50 uppercase tracking-wider text-xs">
@@ -305,17 +305,16 @@ interface NewsItem {
       <section class="mb-12 animate-in fade-in duration-700 relative" data-agent-id="credits-depleted-view">
         <div class="flex flex-col items-center justify-center text-center p-6 sm:p-8 bg-neutral-900/90 backdrop-blur-md rounded-2xl border border-amber-500/30 shadow-[0_0_50px_rgba(245,158,11,0.15)] max-w-2xl mx-auto">
           <div class="text-5xl mb-4 animate-bounce">⚠️</div>
-          <h3 class="text-2xl font-bold text-amber-400 mb-2 font-mono tracking-tight">Créditos de Prepago Agotados</h3>
+          <h3 class="text-2xl font-bold text-amber-400 mb-2 font-mono tracking-tight">Cuota gratuita en espera</h3>
           <p class="text-neutral-300 mb-6 font-medium text-base leading-relaxed max-w-md">
-            Tu API Key de Gemini en Google AI Studio se ha quedado sin saldo o créditos de prepago para procesar solicitudes.
+            El proveedor gratuito limita una respuesta cada 30 segundos. No hay cobros ni saldo que recargar.
           </p>
           <div class="bg-black/60 rounded-xl p-5 mb-6 border border-neutral-800 text-left w-full max-w-lg">
-            <h4 class="text-amber-300 font-bold text-sm mb-2">Pasos para solucionarlo:</h4>
+            <h4 class="text-amber-300 font-bold text-sm mb-2">Qué puedes hacer:</h4>
             <ol class="list-decimal list-inside text-xs text-neutral-400 space-y-2.5">
-              <li>Ingresa a la consola de <a href="https://aistudio.google.com/projects" target="_blank" referrerpolicy="no-referrer" class="text-amber-400 hover:underline font-bold">Google AI Studio</a>.</li>
-              <li>Selecciona tu proyecto activo y dirígete a la sección de administración de facturación.</li>
-              <li>Recarga tu saldo de prepago o actualiza tus credenciales de pago.</li>
-              <li>Una vez que se restablezca el saldo, vuelve aquí e intenta de nuevo.</li>
+              <li>Espera 30 segundos y pulsa de nuevo en Reintentar.</li>
+              <li>Agrega una clave gratuita de Groq o OpenRouter en <code class="text-amber-300">GROQ_API_KEY</code> / <code class="text-amber-300">OPENROUTER_API_KEY</code> para evitar la espera.</li>
+              <li>O instala Ollama en local y define <code class="text-amber-300">OLLAMA_MODEL</code> para uso ilimitado y offline.</li>
             </ol>
           </div>
           <button (click)="generate()" data-agent-id="btn-retry-credits" class="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-bold rounded-lg transition-colors shadow-lg shadow-amber-900/50 uppercase tracking-wider text-xs">
@@ -1064,6 +1063,9 @@ export class AppComponent implements OnInit {
       } else if (
         errorMessage.includes('503') || 
         errorMessage.includes('429') || 
+        errorMessage.includes('402') ||
+        errorMessage.includes('free_limit') ||
+        errorMessage.includes('cuota') ||
         errorMessage.includes('overloaded') || 
         errorMessage.includes('unavailable') ||
         errorMessage.includes('too many requests') ||

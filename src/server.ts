@@ -7,70 +7,54 @@ import {
 import express, { Request, Response } from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { GoogleGenAI } from '@google/genai';
+import { chatComplete, describeProviders } from './ai/llm';
+import { buildResearch, searchProviderStatus } from './ai/search';
+import { generateEditorialImage } from './ai/image';
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-function isValidApiKey(key: unknown): key is string {
-  if (typeof key !== 'string') return false;
-  const trimmed = key.trim();
-  if (!trimmed) return false;
-  if (
-    trimmed === 'undefined' ||
-    trimmed === 'null' ||
-    trimmed === 'NaN' ||
-    trimmed === '[object Object]' ||
-    trimmed === 'YOUR_API_KEY'
-  ) {
-    return false;
-  }
-  return trimmed.length >= 15;
-}
-
-// Helper to get GoogleGenAI client with key from request headers or process.env
-function getAiClient(req?: Request): GoogleGenAI {
-  if (typeof process.loadEnvFile === 'function') {
-    try {
-      process.loadEnvFile();
-    } catch {}
-  }
-
-  const envGemini = process.env.GEMINI_API_KEY;
-  const headerKey = req?.headers['x-gemini-api-key'] as string;
-  const authKey = req?.headers['authorization']?.replace(/^Bearer\s+/i, '');
-  const bodyKey = req?.body?.apiKey as string;
-  const envApi = process.env.API_KEY;
-
-  let apiKey = '';
-  if (isValidApiKey(envGemini)) {
-    apiKey = envGemini.trim();
-  } else if (isValidApiKey(headerKey)) {
-    apiKey = headerKey.trim();
-  } else if (isValidApiKey(authKey)) {
-    apiKey = authKey.trim();
-  } else if (isValidApiKey(bodyKey)) {
-    apiKey = bodyKey.trim();
-  } else if (isValidApiKey(envApi)) {
-    apiKey = envApi.trim();
-  }
-
-  if (!apiKey) {
-    throw new Error('Falta la API KEY de Gemini. Por favor proporciona una clave válida en Google AI Studio o en las variables de entorno.');
-  }
-
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build'
-      }
-    }
-  });
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise(res => setTimeout(res, ms));
+}
+
+function extractJsonArray(text: string, keys: string[]): any[] | null {
+  if (!text) return null;
+  let clean = text.trim();
+  const fence = clean.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) clean = fence[1].trim();
+
+  const tryParse = (raw: string): any => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  };
+
+  let data = tryParse(clean);
+  if (data === undefined) {
+    const start = clean.indexOf('[');
+    const end = clean.lastIndexOf(']');
+    if (start !== -1 && end > start) data = tryParse(clean.substring(start, end + 1));
+  }
+  if (data === undefined) {
+    const start = clean.indexOf('{');
+    const end = clean.lastIndexOf('}');
+    if (start !== -1 && end > start) data = tryParse(clean.substring(start, end + 1));
+  }
+
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === 'object') {
+    for (const key of keys) {
+      if (Array.isArray((data as any)[key])) return (data as any)[key];
+    }
+    for (const value of Object.values(data)) {
+      if (Array.isArray(value)) return value as any[];
+    }
+    return [data];
+  }
+  return null;
 }
 
 function cleanWhatsAppText(text: string): string {
@@ -107,8 +91,7 @@ const DEFAULT_X_TRENDS = [
 // 1. API: GENERAR NOTICIAS (WHATSAPP + X + PROMPTS)
 app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promise<void> => {
   try {
-    const ai = getAiClient(req);
-    const { topics = [], customQuery = '', activeXTrends = [] } = req.body;
+    const { topics = [], customQuery = '', activeXTrends = [], filters = {} } = req.body;
 
     const expandedTopics = (topics as string[]).map(t => {
       if (t === 'China Tech') {
@@ -154,14 +137,29 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       focusInstruction = `
         🔴 MODO ANÁLISIS DE URL ACTIVO.
         El usuario ha proporcionado este ENLACE: "${customQuery}".
-        TU TAREA ÚNICA: Accede al contenido de ese enlace (o busca información sobre esa URL específica usando Google Search si no puedes leerlo directamente) y REESCRIBE esa noticia siguiendo el formato editorial.
+        TU TAREA ÚNICA: Usa el contenido extraído de ese enlace (incluido abajo en la INVESTIGACIÓN) y REESCRIBE esa noticia siguiendo el formato editorial.
         IGNORA los temas seleccionados si no tienen relación con el enlace.
       `;
       searchContext = `Analiza a profundidad el contenido del enlace: ${customQuery}`;
     } else {
       focusInstruction = customQuery ? `FOCUS ESPECÍFICO OBLIGATORIO EN: "${customQuery}"` : '';
-      searchContext = `Busca en Google las noticias más recientes e impactantes de HOY. Temas: ${topicsString}. ${focusInstruction}`;
+      searchContext = `Reescribe las noticias más recientes e impactantes de HOY. Temas: ${topicsString}. ${focusInstruction}`;
     }
+
+    const researchQueries = isUrl
+      ? []
+      : [customQuery || '', ...(topics as string[]), 'noticias México hoy'];
+    const research = await buildResearch(researchQueries, {
+      url: isUrl ? customQuery.trim() : undefined,
+      filters: {
+        freshness: filters?.freshness,
+        country: filters?.country,
+        language: filters?.language,
+        domains: Array.isArray(filters?.domains) ? filters.domains : undefined,
+        limit: Number(filters?.limit) || undefined
+      }
+    });
+    console.log(`Investigación: ${research.context.length} chars, ${research.sources.length} fuentes`);
 
     const whatsappEditorialRules = `
       ERES EL GUIONISTA DE «ENTENDIENDO COSAS».
@@ -230,7 +228,8 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       - Si es BÚSQUEDA: Si hay un tema específico, esa es la prioridad. Si hay múltiples, busca intersecciones. Prioriza 'Última Hora'.
       
       HERRAMIENTA OBLIGATORIA:
-      Usa Google Search para encontrar o validar la información cuando esté disponible.
+      Trabaja ÚNICAMENTE con la INVESTIGACIÓN incluida en el mensaje del usuario (noticias reales recuperadas de Google News y del enlace, si se dio).
+      No inventes hechos, cifras, fechas ni fuentes que no aparezcan en esa investigación.
       Si el usuario dio una URL, úsala como referencia principal y ponla en 'sourceUrl'.
 
       REGLAS DE ESTILO PARA WHATSAPP (CRÍTICO E INNEGOCIABLE):
@@ -293,101 +292,71 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
           "sourceUrl": "URL proporcionada o encontrada"
         }
       ]
+
+      IMPORTANTE: el ejemplo muestra 1 objeto solo para ilustrar los campos. Tu respuesta debe ser un array con 3 objetos distintos.
+      Cada whatsappBody DEBE tener entre 250 y 350 palabras. Si una nota tiene menos de 250 palabras, la respuesta es inválida.
+      No rechaces la tarea ni te niegues a redactar. Siempre entrega las 3 notas con la investigación provista.
     `;
+
+    const researchBlock = research.context
+      ? `\n\nINVESTIGACIÓN (noticias reales recuperadas hoy; es la ÚNICA base de hechos permitida):\n${research.context}\n\nFUENTES DISPONIBLES:\n${research.sources
+          .slice(0, 6)
+          .map(s => `- ${s.source}${s.published ? ` (${new Date(s.published).toLocaleDateString('es-MX')})` : ''}: ${s.link}`)
+          .join('\n')}`
+      : '\n\nNo se recuperaron noticias en vivo. Sé conservador: no inventes cifras ni hechos y marca como "versión" lo no confirmado.';
 
     const userPrompt = `
       EJECUTA LA OPERACIÓN:
       ${searchContext}
-      Genera ${isUrl ? '1 propuesta optimizada basada en el enlace' : '3 a 5 propuestas detalladas'}.
+      ${researchBlock}
+      Genera ${isUrl ? '1 propuesta optimizada basada en el enlace' : 'exactamente 3 propuestas detalladas'}.
+      Devuelve SIEMPRE un ARRAY JSON con ${isUrl ? '1 objeto' : '3 objetos'}, nunca un solo objeto suelto ni texto adicional.
+      No te niegues a redactar: la INVESTIGACIÓN de arriba ya contiene las fuentes verificadas. Redacta con ella y marca como "versión" solo lo que no aparezca.
+      Las ${isUrl ? '1 propuesta' : '3 propuestas'} deben ser temas o hechos DIFERENTES entre sí, elegidos de la investigación (no tres versiones del mismo hecho).
     `;
-
-    const configsToTry = [
-      { model: 'gemini-3.8-flash', disableSearch: false },
-      { model: 'gemini-3.8-flash', disableSearch: true },
-      { model: 'gemini-2.5-flash', disableSearch: false },
-      { model: 'gemini-2.5-flash', disableSearch: true },
-      { model: 'gemini-flash-latest', disableSearch: true },
-      { model: 'gemini-3.1-flash-lite', disableSearch: true }
-    ];
 
     let lastError: any = null;
 
-    for (const currentConfig of configsToTry) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const config: any = {
-          systemInstruction: systemPrompt,
-          temperature: 0.85
-        };
-
-        if (!currentConfig.disableSearch) {
-          config.tools = [{ googleSearch: {} }];
-        } else {
-          config.responseMimeType = 'application/json';
-        }
-
-        const response = await ai.models.generateContent({
-          model: currentConfig.model,
-          contents: userPrompt,
-          config
-        });
-
-        let text = response.text || '';
-        if (!text && response.candidates && response.candidates.length > 0) {
-          const parts = response.candidates[0].content?.parts || [];
-          const textParts = parts.filter((p: any) => p.text && !p.thought);
-          text = textParts.length > 0 ? textParts.map((p: any) => p.text).join('\n') : parts.map((p: any) => p.text || '').join('\n');
-        }
+        const { text } = await chatComplete(
+          [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          { json: true, temperature: 0.85, maxTokens: 12_000, timeoutMs: 240_000 }
+        );
 
         if (!text || !text.trim()) {
           continue;
         }
 
-        let jsonString = text.trim();
-        const jsonMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-        if (jsonMatch) {
-          jsonString = jsonMatch[1].trim();
+        const parsedData = extractJsonArray(text, ['news', 'noticias', 'items', 'results', 'data']);
+
+        if (!parsedData || parsedData.length === 0) {
+          console.warn('Respuesta de IA sin noticias utilizables:', text.slice(0, 1200));
         }
 
-        let parsedData: any = null;
-        try {
-          parsedData = JSON.parse(jsonString);
-        } catch {
-          const arrayStart = jsonString.indexOf('[');
-          const arrayEnd = jsonString.lastIndexOf(']');
-          if (arrayStart !== -1 && arrayEnd > arrayStart) {
-            parsedData = JSON.parse(jsonString.substring(arrayStart, arrayEnd + 1));
-          } else {
-            const objStart = jsonString.indexOf('{');
-            const objEnd = jsonString.lastIndexOf('}');
-            if (objStart !== -1 && objEnd > objStart) {
-              parsedData = [JSON.parse(jsonString.substring(objStart, objEnd + 1))];
-            }
-          }
-        }
-
-        if (parsedData) {
-          if (!Array.isArray(parsedData) && typeof parsedData === 'object') {
-            parsedData = [parsedData];
-          }
-          if (Array.isArray(parsedData) && parsedData.length > 0) {
-            const cleanedNews = parsedData.map((item: any) => ({
+        if (parsedData && parsedData.length > 0) {
+          const cleanedNews = parsedData
+            .filter((item: any) => item && (item.title || item.whatsappBody))
+            .map((item: any) => ({
               ...item,
               whatsappBody: cleanWhatsAppText(item.whatsappBody || '')
             }));
+          if (cleanedNews.length > 0) {
             res.json({ news: cleanedNews });
             return;
           }
+          console.warn('JSON sin campos de noticia:', text.slice(0, 1200));
         }
       } catch (err: any) {
         lastError = err;
-        const msg = String(err?.message || err);
-        if (msg.includes('429') || msg.includes('503') || msg.includes('RESOURCE_EXHAUSTED')) {
-          await delay(1500);
-        }
+        await delay(1200);
       }
     }
 
-    res.status(500).json({ error: lastError?.message || 'No se pudo generar noticias con los modelos disponibles.' });
+    res.status(500).json({ error: lastError?.message || 'No se pudo generar noticias con los proveedores disponibles.' });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Error interno del servidor.' });
   }
@@ -396,19 +365,20 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
 // 2. API: OBTENER TENDENCIAS DE X
 app.post('/api/gemini/trends', async (req: Request, res: Response): Promise<void> => {
   try {
-    let ai: GoogleGenAI;
-    try {
-      ai = getAiClient(req);
-    } catch {
-      res.json({ trends: DEFAULT_X_TRENDS });
-      return;
-    }
     const { region = 'México' } = req.body;
     const today = new Date().toLocaleDateString('es-MX', { year: 'numeric', month: 'long', day: 'numeric' });
 
+    const research = await buildResearch(
+      [`tendencias ${region} hoy`, `noticias ${region} hoy`, `${region} política economía empresas`],
+      { limit: 5, deep: false, filters: { freshness: 'day' } }
+    ).catch(() => ({ context: '', sources: [] as any[] }));
+
     const prompt = `Hoy es ${today}. Eres un analista de redes sociales especializado en X (antes Twitter).
-Utiliza Google Search para identificar las 10 a 14 tendencias, temas de conversación más calientes y hashtags del día de hoy en X (Twitter) en ${region} y en español.
-Investiga qué temas y hashtags están marcando la conversación actual en noticias, política, economía, empresas, sociedad y entretenimiento.
+Con la INVESTIGACIÓN de noticias reales incluida abajo, identifica las 10 a 14 tendencias, temas de conversación más calientes y hashtags del día de hoy en X (Twitter) en ${region} y en español.
+Basa cada tendencia en los temas que aparecen en la investigación. No inventes sucesos ni cifras.
+
+INVESTIGACIÓN:
+${research.context || 'Sin noticias en vivo disponibles; usa temas generales de actualidad.'}
 
 Para cada tendencia entrega:
 - topic: El nombre exacto de la tendencia
@@ -428,58 +398,29 @@ DEVUELVE ÚNICAMENTE UN ARRAY JSON con esta estructura exacta:
   }
 ]`;
 
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
-    for (const model of modelsToTry) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          config: {
-            tools: [{ googleSearch: {} }],
-            temperature: 0.5
-          }
-        });
+    try {
+      const { text } = await chatComplete(
+        [
+          { role: 'system', content: 'Eres un analista de tendencias de X. Respondes únicamente con JSON válido, sin markdown.' },
+          { role: 'user', content: prompt }
+        ],
+        { json: true, temperature: 0.5, maxTokens: 6_000, timeoutMs: 120_000 }
+      );
 
-        let text = response.text || '';
-        if (!text && response.candidates?.[0]?.content?.parts) {
-          const parts = response.candidates[0].content.parts.filter((p: any) => p.text && !p.thought);
-          text = parts.map((p: any) => p.text).join('\n');
-        }
-
-        if (text) {
-          let cleanJson = text.trim();
-          if (cleanJson.includes('```json')) {
-            cleanJson = cleanJson.split('```json')[1].split('```')[0].trim();
-          } else if (cleanJson.includes('```')) {
-            cleanJson = cleanJson.split('```')[1].split('```')[0].trim();
-          }
-
-          const parsed = JSON.parse(cleanJson);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            const mapped = parsed.map((item: any) => ({
-              topic: String(item.topic || '').trim(),
-              hashtag: item.hashtag?.startsWith('#') ? item.hashtag.trim() : `#${String(item.hashtag || item.topic || '').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_]/g, '')}`,
-              category: String(item.category || 'Tendencia').trim(),
-              postsCount: String(item.postsCount || 'Tendencia').trim(),
-              summary: String(item.summary || '').trim()
-            }));
-            res.json({ trends: mapped });
-            return;
-          }
-        }
-      } catch (err: any) {
-        const errorMsg = String(err?.message || err || '');
-        if (
-          errorMsg.includes('API_KEY_INVALID') ||
-          errorMsg.includes('API key not valid') ||
-          errorMsg.includes('PERMISSION_DENIED') ||
-          errorMsg.includes('INVALID_ARGUMENT')
-        ) {
-          res.json({ trends: DEFAULT_X_TRENDS });
-          return;
-        }
-        console.warn(`Aviso buscando tendencias con ${model}:`, errorMsg);
+      const parsed = extractJsonArray(text, ['trends', 'tendencias', 'items', 'results', 'data']);
+      if (parsed && parsed.length > 0) {
+        const mapped = parsed.map((item: any) => ({
+          topic: String(item.topic || '').trim(),
+          hashtag: item.hashtag?.startsWith('#') ? item.hashtag.trim() : `#${String(item.hashtag || item.topic || '').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_]/g, '')}`,
+          category: String(item.category || 'Tendencia').trim(),
+          postsCount: String(item.postsCount || 'Tendencia').trim(),
+          summary: String(item.summary || '').trim()
+        }));
+        res.json({ trends: mapped });
+        return;
       }
+    } catch (err: any) {
+      console.warn('Aviso buscando tendencias:', err?.message || err);
     }
 
     // Fallback a tendencias por defecto
@@ -492,7 +433,6 @@ DEVUELVE ÚNICAMENTE UN ARRAY JSON con esta estructura exacta:
 // 3. API: AJUSTAR WHATSAPP
 app.post('/api/gemini/adjust-whatsapp', async (req: Request, res: Response): Promise<void> => {
   try {
-    const ai = getAiClient(req);
     const { currentText, action, contextTopic } = req.body;
 
     let actionInstructions = '';
@@ -537,25 +477,14 @@ REGLAS DURAS OBLIGATORIAS:
 Devuelve ÚNICAMENTE el texto final en texto plano.
 `;
 
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
-    for (const model of modelsToTry) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: { temperature: 0.8 }
-        });
-        const text = response.text?.trim() || '';
-        if (text) {
-          res.json({ text: cleanWhatsAppText(text) });
-          return;
-        }
-      } catch (err: any) {
-        console.warn(`Error ajustando WhatsApp con ${model}:`, err?.message || err);
-      }
-    }
-
-    res.status(500).json({ error: 'No se pudo ajustar el texto de WhatsApp.' });
+    const { text } = await chatComplete(
+      [
+        { role: 'system', content: 'Eres el guionista de «Entendiendo Cosas». Devuelves solo texto plano, sin markdown.' },
+        { role: 'user', content: prompt }
+      ],
+      { temperature: 0.8, maxTokens: 6_000, timeoutMs: 180_000 }
+    );
+    res.json({ text: cleanWhatsAppText(text.trim()) });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Error ajustando WhatsApp.' });
   }
@@ -564,7 +493,6 @@ Devuelve ÚNICAMENTE el texto final en texto plano.
 // 4. API: AJUSTAR POST DE X (TWITTER)
 app.post('/api/gemini/adjust-twitter', async (req: Request, res: Response): Promise<void> => {
   try {
-    const ai = getAiClient(req);
     const { currentText, action, contextTopic } = req.body;
 
     let actionInstructions = '';
@@ -621,25 +549,14 @@ REGLAS OBLIGATORIAS:
 - Entrega ÚNICAMENTE el texto final listo para publicar en X.
 `;
 
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
-    for (const model of modelsToTry) {
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: { temperature: 0.75 }
-        });
-        const text = response.text?.trim() || '';
-        if (text) {
-          res.json({ text });
-          return;
-        }
-      } catch (err: any) {
-        console.warn(`Error reformateando post de X con ${model}:`, err?.message || err);
-      }
-    }
-
-    res.status(500).json({ error: 'No se pudo generar el formato alternativo para X.' });
+    const { text } = await chatComplete(
+      [
+        { role: 'system', content: 'Eres un estratega editorial de X. Devuelves solo el texto final listo para publicar.' },
+        { role: 'user', content: prompt }
+      ],
+      { temperature: 0.75, maxTokens: 3_000, timeoutMs: 180_000 }
+    );
+    res.json({ text: text.trim() });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Error ajustando post de X.' });
   }
@@ -648,7 +565,6 @@ REGLAS OBLIGATORIAS:
 // 5. API: GENERAR PORTADA EDITORIAL (4:3)
 app.post('/api/gemini/generate-cover', async (req: Request, res: Response): Promise<void> => {
   try {
-    const ai = getAiClient(req);
     const { imagePrompt, title = '', category = '' } = req.body;
 
     let cleanPrompt = (imagePrompt || '').trim();
@@ -678,69 +594,30 @@ app.post('/api/gemini/generate-cover', async (req: Request, res: Response): Prom
 
     const fullPrompt = `${cleanPrompt}${styleSupplement}${singleWatermarkRule}`.trim();
 
-    // 1. Modelo Principal: Nano Banana 2.1 (4:3)
     try {
-      console.log('Iniciando generación en servidor con Nano Banana 2.1...');
-      const response = await ai.models.generateContent({
-        model: 'gemini-nano-banana-2.1',
-        contents: {
-          parts: [{ text: fullPrompt }]
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: '4:3',
-            imageSize: '1K'
-          }
-        }
-      });
-
-      for (const candidate of response.candidates || []) {
-        for (const part of candidate.content?.parts || []) {
-          if (part.inlineData?.data) {
-            res.json({
-              imageUrl: `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`
-            });
+      const result = await generateEditorialImage(fullPrompt);
+      if (result.imageUrl.startsWith('data:')) {
+        res.json({ imageUrl: result.imageUrl });
+        return;
+      }
+      if (result.imageUrl.startsWith('http')) {
+        const response = await fetch(result.imageUrl, { headers: { 'User-Agent': 'entendiendocosas-bot/1.0' } });
+        if (response.ok) {
+          const type = response.headers.get('content-type') || '';
+          if (type.startsWith('image/')) {
+            const buffer = Buffer.from(await response.arrayBuffer());
+            res.json({ imageUrl: `data:${type.split(';')[0]};base64,${buffer.toString('base64')}` });
             return;
           }
         }
       }
     } catch (err: any) {
-      console.warn('Nano Banana 2.1 no disponible en servidor:', err?.message || err);
+      console.warn('Generación de portada falló:', err?.message || err);
     }
 
-    // 2. Fallback: Nano Banana Lite (4:3)
-    try {
-      console.log('Intentando fallback en servidor con Nano Banana Lite (gemini-3.1-flash-lite-image)...');
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite-image',
-        contents: {
-          parts: [{ text: fullPrompt }]
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: '4:3'
-          }
-        }
-      });
-
-      for (const candidate of response.candidates || []) {
-        for (const part of candidate.content?.parts || []) {
-          if (part.inlineData?.data) {
-            res.json({
-              imageUrl: `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`
-            });
-            return;
-          }
-        }
-      }
-    } catch (err: any) {
-      console.warn('gemini-3.1-flash-lite-image no disponible en servidor:', err?.message || err);
-    }
-
-    // Si los modelos de pago de imagen no están disponibles en la key, indicamos que se use el lienzo fallback local
     res.json({
       fallbackNeeded: true,
-      error: 'Modelos de imagen no disponibles. Activando póster editorial de alta fidelidad.'
+      error: 'Generador de imágenes gratuito no disponible. Activando póster editorial local.'
     });
   } catch (err: any) {
     res.json({
@@ -750,9 +627,26 @@ app.post('/api/gemini/generate-cover', async (req: Request, res: Response): Prom
   }
 });
 
+// 6. API: ESTADO DE PROVEEDORES DE IA (diagnóstico)
+app.get('/api/ai/status', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const status = await describeProviders();
+    res.json({
+      gratis: true,
+      proveedores: status.order,
+      ollamaLocal: status.ollama,
+      geminiActivo: process.env.AI_ALLOW_GEMINI === '1',
+      busqueda: searchProviderStatus(),
+      imagenes: (process.env.IMAGE_PROVIDERS || 'pollinations').split(',').map(p => p.trim()).filter(Boolean)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'No se pudo consultar el estado.' });
+  }
+});
+
 // Servir archivos estáticos del navegador para producción
 const serverDistFolder = dirname(fileURLToPath(import.meta.url));
-const browserDistFolder = resolve(serverDistFolder, '../browser');
+const browserDistFolder = resolve(serverDistFolder, '..');
 app.use(express.static(browserDistFolder, {
   maxAge: '1y',
   index: false,
