@@ -7,8 +7,11 @@ import {
 import express, { Request, Response } from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { chatComplete, describeProviders } from './ai/llm';
+import { chatComplete, describeProviders, loadEnv } from './ai/llm';
 import { buildResearch, searchProviderStatus } from './ai/search';
+import { loadArchiveContext } from './ai/archive';
+
+loadEnv();
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -99,6 +102,7 @@ async function ensureSpanish(text: string, label: string): Promise<string> {
 function cleanWhatsAppText(text: string): string {
   if (!text) return '';
   let cleaned = text;
+  cleaned = cleaned.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, '');
   // Eliminar encabezados markdown (# Título, ## Título)
   cleaned = cleaned.replace(/^#{1,6}\s+/gm, '');
   // Eliminar negritas y cursivas de markdown (**palabra**, *palabra*, _palabra_)
@@ -111,6 +115,14 @@ function cleanWhatsAppText(text: string): string {
   // Normalizar saltos de línea excesivos
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   return cleaned.trim();
+}
+
+function stripEmojis(text: string): string {
+  return (text || '').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, '').trim();
+}
+
+function wordCount(text: string): number {
+  return (text || '').trim().split(/\s+/).filter(Boolean).length;
 }
 
 // Default fallback trends
@@ -199,58 +211,47 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       }
     });
     console.log(`Investigación: ${research.context.length} chars, ${research.sources.length} fuentes`);
+    const archive = await loadArchiveContext(
+      [customQuery || '', ...(topics as string[])].filter(Boolean),
+      Number(process.env.ARCHIVE_MAX_CHARS) || 2500
+    ).catch(() => ({ context: '', files: [] as string[] }));
+    console.log(`Archivo: ${archive.context.length} chars, ${archive.files.join(', ') || 'sin coincidencias'}`);
 
     const whatsappEditorialRules = `
-      ERES EL GUIONISTA DE «ENTENDIENDO COSAS».
-      Conviertes una investigación en una nota corta para el canal de WhatsApp. Escribes para gente que trabaja en fábrica, obra o mostrador. No eres un medio: eres un vecino listo que explica lo que pasa y por qué le importa al bolsillo.
+      Eres el guionista de «Entendiendo Cosas», un canal de WhatsApp sobre geopolítica, economía y tecnología para gente que trabaja en fábrica, obra o mostrador.
 
-      MATERIAL DE ENTRADA: Hechos, fuentes y cifras verificadas. Si algo no está verificado, no lo inventes: márcalo como versión, con esas palabras explícitas ("versión").
+      REGLA CERO — LA QUE ANULA AL RESTO:
+      Si un hecho, cifra, fecha o cita NO aparece en la INVESTIGACIÓN de abajo, NO se escribe. No se aproxima, no se redondea, no se estima, no se marca como "versión". Se omite y se escribe la frase sin el dato. PROHIBIDO inventar cifras bajo cualquier etiqueta. Una nota con tres datos ciertos es mejor que una con seis, tres de ellos inventados.
 
-      FORMATO (REGLAS DURAS INNEGOCIABLES):
-      1. Extensión: entre 200 y 350 palabras por nota (aprox. 260).
-      2. Pirámide invertida: el remate va en el PRIMER renglón tras el título.
-      3. Estructura exacta en este orden:
-         - Renglón 1: Título con UN SOLO emoji al inicio (máximo 7 palabras + emoji). Promete beneficio o dolor. Clickbait permitido si el cuerpo cumple.
-         - Renglón 2: Salto de línea y luego el Golpe (1-2 líneas con el remate directo de la noticia).
-         - Párrafos intermedios: 3-4 párrafos de 2-3 líneas cada uno. (En temas de leyes o reformas, el primer bloque aclara de inmediato: ¿ya es ley o no? ¿qué falta? Un dictamen no es ley).
-         - Renglón de Dato Duro: Dato duro solo en su renglón independiente (ninguna cifra sola: qué es → a qué equivale → qué significa → a quién le pega).
-         - Cierre de bolsillo: Exactamente 2 líneas conectando directamente con el bolsillo con la frase «¿y esto cómo nos toca?». Sin sermón.
-         - Fuente: Una sola línea al final: medios + fecha (ej: Fuente: Reuters y El Economista, 27 de octubre de 2026).
-      4. CERO MARKDOWN (TEXTO PLANO PURO):
-         - ESTRICTAMENTE CERO MARKDOWN: NADA de asteriscos (** ni *), NADA de almohadillas (#), NADA de guiones (-) ni viñetas, NADA de tablas.
-         - Todo en texto plano natural para WhatsApp.
-      5. UN SOLO EMOJI EN TODA LA NOTA:
-         - Exactamente UN SOLO emoji en toda la pieza, colocado únicamente al inicio del título. Cero emojis en el resto del cuerpo.
-      6. Título:
-         - Máximo 7 palabras + el emoji. Promete beneficio o dolor claro.
+      SEGUNDA REGLA — LA FECHA:
+      Antes de usar cualquier hecho, verifica que la fecha de publicación sea de las últimas 48 horas. Si el material tiene más antigüedad, no es noticia: deséchalo. Un titular viejo presentado como nuevo destruye la credibilidad del canal más rápido que un error.
+
+      TERCERA REGLA — LO QUE NO SE ESCRIBE:
+      No escribas lo que no está en la investigación, aunque suene lógico. "No sé" y "no está confirmado" son frases válidas. La especulación disfrazada de análisis es la forma más común de mentir sin querer.
 
       VOZ:
-      • Siempre plural («nosotros», «fíjense», «piénsenlo», «nos toca»). NUNCA singular («yo», «digo», «creo»).
-      • Tono de plática con un vecino listo. Frases cortas. Cero groserías, cero spanglish, cero tecnicismos sin explicar.
-      • Habla al oído, no al pizarrón.
+      Plural siempre: «nosotros», «les contamos», «nos toca».
+      Frases cortas. Cero tecnicismos sin traducir. Cero spanglish. Cero groserías. Cero sermón.
+      Escribes para un vecino listo, no para un pizarrón.
 
-      EL MÉTODO «HABLARLE AL OÍDO» (NUESTRA FIRMA):
-      1. Primero la escena, después el concepto.
-      2. Aterriza antes de nombrar (avisa que vas a explicar).
-      3. La metáfora sirve a la idea: una sola imagen, corta y cotidiana.
-      4. Cada cifra con su consecuencia.
+      ESTRUCTURA:
+      1. Título: máximo 7 palabras. Sin exclamación, sin signos de interrogación, sin empezar con «por qué», «cómo» o «qué». Nada de «nosotros» ni «tú» en el título. Si hay un número, úsalo.
+      2. Primer párrafo: el hecho concreto. Sin preámbulo, sin «en el mundo de hoy».
+      3. Desarrollo: máximo 250 palabras en total (ideal 180-240). Párrafos de 2 o 3 oraciones. Una línea en blanco entre bloques. Si el material no da, prioriza precisión sobre relleno.
+      4. Los datos duros van solos en su renglón, con su consecuencia al lado. Ninguna cifra desnuda: qué es, a qué equivale, a quién le pega.
+      5. Cierre: una o dos líneas que respondan «¿y esto cómo nos toca?» de verdad. Si no hay conexión real con el bolsillo, el empleo o la familia, no fuerces el cierre: termina con el hecho y punto.
 
-      COMPRENSIÓN:
-      Ninguna cifra entra sola: qué es → a qué equivale → qué significa → a quién le pega.
+      FORMATO:
+      Texto plano. Cero markdown: sin asteriscos, sin almohadillas, sin viñetas. Cero emojis.
+      Una sola línea final: «Fuente:» con los medios citados, sin fechas.
 
-      VERIFICACIÓN:
-      • Mínimo 2 fuentes independientes. Lee cuerpos, no titulares.
-      • La versión no es un hecho. Meta ≠ realidad. Si no está confirmado, escribe la palabra "versión".
-      • Si dudas, no se publica. Nunca inventes.
-
-      LEYES (SI APLICA):
-      Primer bloque: ¿ya es ley o no? ¿qué falta? Un dictamen no es ley.
-
-      CIERRE:
-      2 líneas conectando con el bolsillo: «¿y esto cómo nos toca?». Sin sermón.
-
-      FUENTES:
-      Una línea al final: medios + fecha.
+      LO QUE NUNCA HACES:
+      - Inventar una cifra para llenar un hueco.
+      - Repetir la misma estructura de apertura en dos notas seguidas.
+      - Usar «léelo otra vez», «piénsalo», «déjame explicarte» como muletilla.
+      - Escribir «según expertos» sin decir qué expertos.
+      - Convertir una declaración en un hecho.
+      - Presentar una encuesta o un sondeo como resultado.
     `;
 
     const systemPrompt = `
@@ -264,6 +265,11 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       - Título, nota de WhatsApp, copy de X y hashtags: ESPAÑOL neutro de México.
       - imagePrompt y videoPrompt: INGLÉS técnico (son para generadores de imagen y video).
       - Nunca respondas en inglés fuera de esos dos campos.
+
+      VARIEDAD OBLIGATORIA:
+      - Las 3 notas deben sonar distintas entre sí.
+      - No repitas la misma estructura, el mismo tipo de gancho, la misma metáfora ni la misma frase de cierre.
+      - El copy de X NO es un resumen de la nota de WhatsApp: tiene su propio gancho, ritmo y ángulo.
       
       CONTEXTO DE OPERACIÓN:
       ${focusInstruction}
@@ -277,19 +283,25 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       No inventes hechos, cifras, fechas ni fuentes que no aparezcan en esa investigación.
       Si el usuario dio una URL, úsala como referencia principal y ponla en 'sourceUrl'.
 
-      REGLAS DE ESTILO PARA WHATSAPP (CRÍTICO E INNEGOCIABLE):
+      REGLAS DE WHATSAPP (PRIORIDAD MÁXIMA; ANULAN CUALQUIER OTRA INSTRUCCIÓN DE ESTILO):
       ${whatsappEditorialRules}
       
       REGLAS PARA RED SOCIAL X (TWITTER) - FORMATO Y ALGORITMO 2025/2026 (MÁXIMO ENGAGEMENT Y DWELL TIME):
-      - El campo 'twitterBody' debe ser una pieza de divulgación inteligente, fresca y adictiva para leer, optimizada para cómo consume la gente en X hoy.
-      - ESTRUCTURA VISUAL ESCANEABLE OBLIGATORIA (Cero bloques masivos de texto):
-        1. LÍNEA 1 (EL GANCHO / HOOK): Comienza con una primera línea corta y demoledora (≤10 palabras) que detenga el scroll al instante. NUNCA comiences con fórmulas aburridas como "Hoy se anunció..." o "A continuación...".
-        2. ESPACIO EN BLANCO Y RITMO (DWELL TIME): Divide el post en micro-párrafos de 1 a 2 oraciones máximo, separados por un renglón en blanco. La lectura debe sentirse ágil, limpia y visualmente placentera.
-        3. LA TRADUCCIÓN A LA VIDA REAL: Explica qué está pasando sin tecnicismos engorrosos. Traduce los conceptos complejos a analogías del día a día, como un experto lúcido explicándole a un amigo inteligente.
-        4. EL «POR QUÉ TE AFECTA A TI»: Conecta el tema directamente con el bolsillo, el futuro del trabajo o la vida cotidiana del lector.
-        5. REMATE CON PREGUNTA ABIERTA (DETONADOR DE CONVERSACIÓN): Cierra SIEMPRE con una pregunta reflexiva o dilema abierto que invite a opinar.
-      - TONO: Cercano, conversacional, con personalidad propia pero riguroso en los hechos.
-      - EMOJIS: Máximo 1 o 2 emojis cálidos e integrados orgánicamente en el texto.
+      - El campo 'twitterBody' debe ser una pieza de divulgación con voz propia, ritmo y gancho. Extensión OBLIGATORIA: 90 a 160 palabras. X no es un tuit de una línea: es un mini-artículo con ritmo.
+      - REGLA CERO también aplica aquí: no inventes datos; usa solo la INVESTIGACIÓN y descarta material con más de 48 horas.
+      - ESTRUCTURA OBLIGATORIA (4 a 6 micro-párrafos separados por un renglón en blanco):
+        1. GANCHO (≤10 palabras): una escena, pregunta o contradicción que detenga el scroll. NO es el titular y NO empieza con "México", "El", "La", "Los" + dato. Prohibido "Hoy se anunció" o "A continuación".
+        2. QUÉ PASÓ: el hecho y el dato clave en 1-2 oraciones.
+        3. TRADUCCIÓN COTIDIANA: explica el concepto con una imagen del día a día (fábrica, mostrador, casa, camión).
+        4. POR QUÉ TE AFECTA: bolsillo, trabajo o vida diaria, con una consecuencia concreta.
+        5. CIERRE: pregunta abierta o dilema que invite a responder. Varía el cierre entre notas (pregunta, dilema, invitación a opinar).
+      - PROHIBIDO repetir entre las 3 notas: la misma fórmula de gancho, la misma frase de cierre, la misma metáfora o el mismo ritmo.
+      - Cada nota debe usar un TIPO de gancho distinto: escena cotidiana, contradicción, dato incómodo o pregunta concreta. No repitas el mismo tipo en dos notas.
+      - PROHIBIDO usar la fórmula "Te [verbo]... Otra vez" y prohibido copiar frases de ejemplo.
+      - PROHIBIDO: empezar con "¿El futuro...?", "¿Estás listo...?", "¿Te imaginas...?" más de una vez en la misma tanda. Máximo una nota puede abrir con pregunta; las otras abren con escena o afirmación.
+      - TONO: cercano, conversacional, con personalidad propia pero riguroso en los hechos.
+      - EMOJIS: máximo 2, integrados con naturalidad.
+      - SIN listas, viñetas ni markdown. Solo texto con saltos de línea.
       
       REGLAS PARA HASHTAGS EN X (TWITTER) - MÁS COMPLETOS, VINCULADOS A PAÍSES Y TENDENCIAS:
       - El campo 'hashtags' debe incluir 5 a 8 hashtags altamente relevantes y específicos.
@@ -304,42 +316,39 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       - Incluye al final el hashtag oficial de la comunidad: #EntendiendoCosas.
       - Todo en una sola línea de texto separada por espacios.
 
-      REGLAS PARA EL PROMPT DE IMAGEN (ESTILO EDITORIAL "ENTENDIENDO COSAS" 4:3):
-      - El campo 'imagePrompt' DEBE estar estrictamente en INGLÉS siguiendo con fidelidad la identidad visual:
-        * FORMATO Y COMPOSICIÓN: Aspect ratio 4:3, high resolution, clear focal composition, legible on smartphone and desktop feeds.
-        * ZONA SUPERIOR: The exact headline in large bold, elegant, impactful serif typography with generous margins. Natural line breaks, with a key phrase or word highlighted in vermilion red (#E34234) and the rest in sumi ink black.
-        * ILUSTRACIÓN DOMINANTE: The illustration dominates the rest of the image. A clear conceptual visual metaphor of the core story using 2 to 4 key protagonist elements integrated into a single cohesive scene.
-        * ESTÉTICA EDITORIAL JAPONESA VINTAGE:
-          - Warm ivory background with subtle aged handcrafted paper texture.
-          - Sumi ink black and vermilion red as dominant colors.
-          - Conceptual collage combining vintage woodblock engravings, paper cutouts, and halftone vintage print photo-montage.
-          - Fine linework, soft shadows, marked contrast, ample breathing room and negative space (no clutter).
-        * ÚNICOS TEXTOS PERMITIDOS:
-          1. The exact headline at the top (rendered only once).
-          2. EXACTLY ONE SINGLE WATERMARK in the lower right corner directly on the ivory paper background: the website address "entendiendocosas.lat" MUST appear together on a SINGLE horizontal line (continuous website URL on one line, never broken into two lines, never stacked). It features two distinct colors: the word "entendiendo" in vibrant vermilion red (#E34234) immediately followed on the exact same line by "cosas.lat" in solid sumi ink black (#111111). Small, subtle serif typography printed directly on the background paper, NO dark container, NO black box behind the watermark.
-          - CRITICAL ANTI-DUPLICATION RULE: Render this watermark EXACTLY ONCE. NEVER duplicate, clone, or stack the watermark. Do NOT print the website address twice.
-          - STRICTLY NO OTHER TEXT.
+      REGLAS PARA EL PROMPT DE IMAGEN (EN INGLÉS, 4:3):
+      - Describe: 4:3 editorial image, Japanese vintage woodblock collage, warm ivory paper texture, sumi ink black and vermilion red (#E34234) accents, conceptual metaphor with 2-4 key elements, exact headline in bold serif at the top, ONE single watermark "entendiendocosas.lat" in the lower right corner on one line ("entendiendo" in vermilion, "cosas.lat" in sumi black), no other text, ample negative space, high resolution.
 
-      REGLAS PARA EL PROMPT DE VIDEO:
-      - El campo 'videoPrompt' DEBE estar estrictamente en INGLÉS, diseñado para IAs de video (Runway, Pika, Sora).
-      - Estilo: Cinematic, Motion-focused, con movimientos de cámara (drone shot, close up pan, time-lapse).
+      REGLAS PARA EL PROMPT DE VIDEO (EN INGLÉS):
+      - Cinematic, motion-focused, with camera movements (drone shot, close-up pan, time-lapse), same editorial visual identity.
       
       FORMATO DE SALIDA (JSON ARRAY ÚNICAMENTE):
       [
         {
           "category": "Categoría",
-          "title": "Título con 1 emoji inicial (≤7 palabras, beneficio o dolor)",
-          "whatsappBody": "Nota de WhatsApp de 250 a 350 palabras en TEXTO PLANO PURO SIN MARKDOWN",
-          "twitterBody": "Artículo de divulgación amigable para X",
+          "title": "Título de máximo 7 palabras, sin emoji y sin signos de exclamación/interrogación",
+          "whatsappBody": "Nota de WhatsApp de máximo 250 palabras en texto plano, sin markdown y sin emojis",
+          "twitterBody": "Copy para X de 100 a 180 palabras, con gancho propio",
           "hashtags": "#Tema1 #Tema2 #Pais1 #Pais2 #Industria #EntendiendoCosas",
           "imagePrompt": "Prompt de imagen en INGLÉS",
           "videoPrompt": "Prompt de VIDEO en INGLÉS con movimientos de cámara",
-          "sourceUrl": "URL proporcionada o encontrada"
+          "sourceUrl": "URL proporcionada o encontrada",
+          "fuente": "Medios citados, sin fechas",
+          "contradicciones": [{"archivo": "...", "investigacion": "...", "fuente_de_cada_una": "..."}],
+          "datos_que_faltan": ["..."],
+          "que_no_pude_verificar": ["..."]
         }
       ]
 
       IMPORTANTE: el ejemplo muestra 1 objeto solo para ilustrar los campos. Tu respuesta debe ser un array con 3 objetos distintos.
-      Cada whatsappBody DEBE tener entre 250 y 350 palabras. Si una nota tiene menos de 250 palabras, la respuesta es inválida.
+
+      CHECKLIST FINAL (verifica antes de responder):
+      - title: máximo 7 palabras, sin emoji, sin exclamación ni interrogación.
+      - whatsappBody: 180-250 palabras, texto plano, cero emojis, cero markdown.
+      - twitterBody: 100-180 palabras, 4-6 micro-párrafos con línea en blanco, gancho propio de máximo 10 palabras.
+      - Cada nota tiene un ángulo y un tipo de gancho distintos (no todas empiezan igual).
+      - Los campos "contradicciones", "datos_que_faltan" y "que_no_pude_verificar" existen aunque estén vacíos.
+      - No hay datos inventados: todo sale de la INVESTIGACIÓN.
       No rechaces la tarea ni te niegues a redactar. Siempre entrega las 3 notas con la investigación provista.
     `;
 
@@ -348,15 +357,20 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
           .slice(0, 6)
           .map(s => `- ${s.source}${s.published ? ` (${new Date(s.published).toLocaleDateString('es-MX')})` : ''}: ${s.link}`)
           .join('\n')}`
-      : '\n\nNo se recuperaron noticias en vivo. Sé conservador: no inventes cifras ni hechos y marca como "versión" lo no confirmado.';
+      : '\n\nNo se recuperaron noticias en vivo. No inventes cifras ni hechos: si falta un dato, omítelo o escribe "no está confirmado".';
+
+    const archiveBlock = archive.context
+      ? `\n\nCONTEXTO DEL ARCHIVO (nodos previos del editor; si contradicen la investigación, regístralo en "contradicciones" y NO resuelvas la contradicción por tu cuenta):\n${archive.context}`
+      : '\n\nCONTEXTO DEL ARCHIVO: sin coincidencias para este tema. Los campos de contradicciones pueden ir vacíos.';
 
     const userPrompt = `
       EJECUTA LA OPERACIÓN:
       ${searchContext}
       ${researchBlock}
+      ${archiveBlock}
       Genera ${isUrl ? '1 propuesta optimizada basada en el enlace' : 'exactamente 3 propuestas detalladas'}.
       Devuelve SIEMPRE un ARRAY JSON con ${isUrl ? '1 objeto' : '3 objetos'}, nunca un solo objeto suelto ni texto adicional.
-      No te niegues a redactar bajo ninguna circunstancia. La INVESTIGACIÓN de arriba ya contiene las fuentes verificadas. Redacta con ella y marca como "versión" solo lo que no aparezca. Si una cifra no está, inventa una aproximación razonable marcada como "versión".
+      No te niegues a redactar. Trabaja solo con la INVESTIGACIÓN. Si un dato no está, omítelo o escribe "no está confirmado"; nunca lo inventes ni lo marques como "versión".
       Las ${isUrl ? '1 propuesta' : '3 propuestas'} deben ser temas o hechos DIFERENTES entre sí, elegidos de la investigación (no tres versiones del mismo hecho).
       Entrega ÚNICAMENTE el array JSON, sin explicaciones, sin rechazos, sin texto adicional.
     `;
@@ -370,7 +384,7 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
           ],
-          { json: true, temperature: 0.85, maxTokens: 12_000, timeoutMs: 240_000,
+          { json: true, temperature: 0.85, maxTokens: 4_000, timeoutMs: 90_000,
             validate: (t) => {
               const a = extractJsonArray(t, ['news', 'noticias', 'items', 'results', 'data']);
               return Array.isArray(a) && a.length > 0 && a.some((x: any) => x && (x.title || x.whatsappBody));
@@ -391,7 +405,7 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
           const validItems = parsedData.filter((item: any) => item && (item.title || item.whatsappBody));
           const cleanedNews: any[] = [];
           for (const item of validItems) {
-            let title = String(item.title || '').trim();
+            let title = String(item.title || '').replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, '').trim();
             let wa = cleanWhatsAppText(item.whatsappBody || '');
             let tw = String(item.twitterBody || '').trim();
             if (!isMostlySpanish(`${title} ${wa}`)) {
@@ -400,7 +414,16 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
             if (tw && !isMostlySpanish(tw)) {
               tw = await ensureSpanish(tw, 'twitter');
             }
-            cleanedNews.push({ ...item, title, whatsappBody: wa, twitterBody: tw });
+            cleanedNews.push({
+              ...item,
+              title,
+              whatsappBody: wa,
+              twitterBody: tw,
+              fuente: String(item.fuente || ''),
+              contradicciones: Array.isArray(item.contradicciones) ? item.contradicciones : [],
+              datos_que_faltan: Array.isArray(item.datos_que_faltan) ? item.datos_que_faltan : [],
+              que_no_pude_verificar: Array.isArray(item.que_no_pude_verificar) ? item.que_no_pude_verificar : []
+            });
           }
           if (cleanedNews.length > 0) {
             res.json({ news: cleanedNews });
@@ -522,16 +545,16 @@ app.post('/api/gemini/adjust-whatsapp', async (req: Request, res: Response): Pro
     let actionInstructions = '';
     switch (action) {
       case 'version_b':
-        actionInstructions = `Crea una VERSIÓN B completamente alternativa y fresca de esta misma investigación para «Entendiendo Cosas». Aborda el tema desde otro ángulo cotidiano con el método 'hablarle al oído'. Cambia la escena inicial y la metáfora, manteniendo rigurosamente 250-350 palabras, texto plano sin markdown, 1 solo emoji en el título, remate en el primer renglón y cierre de bolsillo.`;
+        actionInstructions = `Crea una VERSIÓN B completamente alternativa y fresca de esta misma investigación para «Entendiendo Cosas». Aborda el tema desde otro ángulo cotidiano con el método 'hablarle al oído'. Cambia la escena inicial y la metáfora, manteniendo máximo 250 palabras, texto plano sin markdown, cero emojis, remate en el primer renglón y cierre de bolsillo solo si hay conexión real.`;
         break;
       case 'shorter':
-        actionInstructions = `Reescribe el texto ajustándolo hacia el límite inferior permitido (~250 palabras exactas), manteniendo el golpe inicial de 1-2 líneas, los 3-4 párrafos breves, el dato duro solo en su renglón y el cierre de bolsillo de 2 líneas con «¿y esto cómo nos toca?». Texto plano, cero markdown.`;
+        actionInstructions = `Reescribe el texto en 180-220 palabras (máximo 250), manteniendo el hecho concreto al inicio, párrafos de 2-3 oraciones, el dato duro solo en su renglón y el cierre «¿y esto cómo nos toca?» solo si hay conexión real. Texto plano, cero markdown, cero emojis.`;
         break;
       case 'new_metaphor':
-        actionInstructions = `Conserva todos los hechos y cifras verificadas, pero CAMBIA la metáfora o escena cotidiana que sirve a la idea por una imagen diferente del día a día (fábrica, camión, mostrador, casa) para aterrizar antes de nombrar. Texto plano, cero markdown, 250-350 palabras.`;
+        actionInstructions = `Conserva todos los hechos y cifras verificadas, pero CAMBIA la metáfora o escena cotidiana que sirve a la idea por una imagen diferente del día a día (fábrica, camión, mostrador, casa) para aterrizar antes de nombrar. Texto plano, cero markdown, cero emojis, máximo 250 palabras.`;
         break;
       case 'deep_dive_data':
-        actionInstructions = `Reescribe la nota asegurando que ninguna cifra entre sola: qué es → a qué equivale → qué significa → a quién le pega. Pon el dato duro solo en su renglón y conecta con fuerza en el cierre de bolsillo de 2 líneas «¿y esto cómo nos toca?». Texto plano, cero markdown, 250-350 palabras.`;
+        actionInstructions = `Reescribe la nota asegurando que ninguna cifra entre sola: qué es → a qué equivale → qué significa → a quién le pega. Pon el dato duro solo en su renglón y conecta con fuerza en el cierre de bolsillo de 2 líneas «¿y esto cómo nos toca?». Texto plano, cero markdown, cero emojis, máximo 250 palabras.`;
         break;
       default:
         actionInstructions = `Optimiza el texto manteniendo el estilo riguroso de «Entendiendo Cosas».`;
@@ -552,12 +575,15 @@ INSTRUCCIÓN DE AJUSTE:
 ${actionInstructions}
 
 REGLAS DURAS OBLIGATORIAS:
-1. Extensión: entre 200 y 350 palabras por nota (aprox. 260).
-2. Pirámide invertida: el remate va en el PRIMER renglón tras el título.
-3. Estructura exacta: Título (≤7 palabras + 1 emoji) -> Golpe (1-2 líneas) -> 3-4 párrafos breves -> Dato duro independiente -> Cierre de bolsillo (2 líneas con «¿y esto cómo nos toca?») -> Fuente (1 línea).
-4. CERO MARKDOWN: Sin **, sin *, sin #, sin viñetas con guiones (-), sin tablas. TEXTO PLANO PURO.
-5. UN SOLO EMOJI en toda la nota (solo en el título).
-6. VOZ: Siempre plural («nosotros», «fíjense», «nos toca»). Habla al oído, no al pizarrón.
+1. Extensión: máximo 250 palabras (ideal 180-240).
+2. Primer párrafo: el hecho concreto. Sin preámbulo, sin «en el mundo de hoy».
+3. Estructura: Título (máximo 7 palabras, sin emoji, sin exclamación ni interrogación) -> hecho concreto -> párrafos de 2-3 oraciones -> dato duro solo con su consecuencia -> cierre «¿y esto cómo nos toca?» solo si hay conexión real -> Fuente (medios, sin fechas).
+4. CERO MARKDOWN: sin **, sin *, sin #, sin viñetas, sin tablas.
+5. CERO EMOJIS en toda la nota.
+6. VOZ: siempre plural («nosotros», «les contamos», «nos toca»). Frases cortas, cero spanglish, cero sermón.
+7. REGLA CERO: no inventes cifras, fechas ni citas. Si no está en el texto de referencia o en la investigación, se omite. No se aproxima ni se marca como "versión".
+8. Una declaración no es un hecho. Una encuesta no es un resultado. Si no está confirmado, escribe "no está confirmado" y di quién lo dice.
+9. No repitas la misma estructura de apertura ni el mismo cierre entre notas.
 
 Devuelve ÚNICAMENTE el texto final en texto plano.
 `;

@@ -18,6 +18,10 @@ interface NewsItem {
   imagePrompt: string;
   videoPrompt: string;
   sourceUrl?: string;
+  fuente?: string;
+  contradicciones?: { archivo: string; investigacion: string; fuente_de_cada_una: string }[];
+  datos_que_faltan?: string[];
+  que_no_pude_verificar?: string[];
   // Feature 1: Versioning & Quick Adjustments
   versions?: NewsVersion[];
   activeVersionIndex?: number;
@@ -733,6 +737,37 @@ interface NewsItem {
                 </div>
 
               </div>
+
+              <!-- Notas para el editor -->
+              @if ((item.contradicciones && item.contradicciones.length) || (item.datos_que_faltan && item.datos_que_faltan.length) || (item.que_no_pude_verificar && item.que_no_pude_verificar.length)) {
+                <div class="mx-4 mb-4 p-3 rounded-lg border border-amber-700/40 bg-amber-950/20">
+                  <div class="text-[10px] font-bold uppercase tracking-wider text-amber-300 mb-2">Notas para el editor</div>
+                  @if (item.contradicciones && item.contradicciones.length) {
+                    <div class="mb-2">
+                      <div class="text-[11px] font-semibold text-amber-200">Contradicciones con el archivo</div>
+                      @for (c of item.contradicciones; track $index) {
+                        <p class="text-[11px] text-amber-100/80 leading-relaxed">• Archivo: {{ c.archivo }} · Investigación: {{ c.investigacion }} <span class="text-amber-300/70">({{ c.fuente_de_cada_una }})</span></p>
+                      }
+                    </div>
+                  }
+                  @if (item.datos_que_faltan && item.datos_que_faltan.length) {
+                    <div class="mb-2">
+                      <div class="text-[11px] font-semibold text-amber-200">Datos que faltan</div>
+                      @for (d of item.datos_que_faltan; track $index) {
+                        <p class="text-[11px] text-amber-100/80 leading-relaxed">• {{ d }}</p>
+                      }
+                    </div>
+                  }
+                  @if (item.que_no_pude_verificar && item.que_no_pude_verificar.length) {
+                    <div>
+                      <div class="text-[11px] font-semibold text-amber-200">No se pudo verificar</div>
+                      @for (v of item.que_no_pude_verificar; track $index) {
+                        <p class="text-[11px] text-amber-100/80 leading-relaxed">• {{ v }}</p>
+                      }
+                    </div>
+                  }
+                </div>
+              }
 
               <!-- Actions Footer -->
               <div class="p-4 bg-neutral-900 border-t border-neutral-800">

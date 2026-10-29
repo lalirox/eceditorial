@@ -433,7 +433,7 @@ export async function buildResearch(
     });
   }
 
-  const selected = collected.slice(0, 12);
+  const selected = collected.slice(0, 8);
   const blocks = selected.map((item, idx) => {
     const date = formatSourceDate(item.published);
     const body = stripHtml(item.snippet).slice(0, 2200);
@@ -448,7 +448,7 @@ export async function buildResearch(
   });
 
   return {
-    context: blocks.join('\n\n').slice(0, 16_000),
+    context: blocks.join('\n\n').slice(0, 7_000),
     sources: selected.map(item => ({
       title: item.title,
       link: item.link,

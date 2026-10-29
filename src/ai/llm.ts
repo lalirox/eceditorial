@@ -281,7 +281,8 @@ export async function chatComplete(
         const status = typeof err?.status === 'number' ? err.status : 0;
         const isFreeLimit = status === 402 || status === 429;
         const invalidFormat = String(err?.message || '').includes('inválida');
-        const retriable = !invalidFormat && (isFreeLimit || status >= 500 || !status);
+        const timedOut = err?.name === 'AbortError' || /abort|timeout|timed out/i.test(String(err?.message || ''));
+        const retriable = !invalidFormat && !timedOut && (isFreeLimit || status >= 500 || !status);
         if (retriable && attempt < 2) {
           const waitMs = isFreeLimit
             ? pollinationsMinInterval() + 2_000
