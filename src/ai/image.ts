@@ -26,41 +26,77 @@ async function toDataUrl(buffer: Buffer, contentType: string): Promise<string> {
   return `data:${contentType.split(';')[0] || 'image/png'};base64,${buffer.toString('base64')}`;
 }
 
+let imageBusy: Promise<void> = Promise.resolve();
+let imageLastCall = 0;
+
+function imageMinInterval(): number {
+  const configured = Number(env('POLLINATIONS_IMAGE_MIN_INTERVAL_MS'));
+  return Number.isFinite(configured) && configured > 0 ? configured : 31_000;
+}
+
+async function withImageSlot<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = imageBusy;
+  let release!: () => void;
+  imageBusy = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  await previous;
+  const wait = imageMinInterval() - (Date.now() - imageLastCall);
+  if (wait > 0) await sleep(wait);
+  try {
+    return await fn();
+  } finally {
+    imageLastCall = Date.now();
+    release();
+  }
+}
+
+function pollinationsModels(): string[] {
+  const configured =
+    env('POLLINATIONS_IMAGE_MODELS') || env('POLLINATIONS_IMAGE_MODEL') || 'flux,sana,turbo';
+  const models = configured.split(',').map(m => m.trim()).filter(Boolean);
+  for (const fallback of ['flux', 'sana', 'turbo']) {
+    if (!models.includes(fallback)) models.push(fallback);
+  }
+  return [...new Set(models)];
+}
+
 async function pollinationsImage(prompt: string): Promise<ImageResult> {
   const imageBase = env('POLLINATIONS_IMAGE_URL', 'https://image.pollinations.ai/prompt').replace(/\/+$/, '');
-  const model = env('POLLINATIONS_IMAGE_MODEL', 'sana');
   const seed = Math.floor(Math.random() * 1_000_000_000);
-  const url =
-    `${imageBase}/${encodeURIComponent(prompt.slice(0, 1800))}` +
-    `?width=1200&height=900&model=${encodeURIComponent(model)}&nologo=true&seed=${seed}`;
+  const shortPrompt = prompt.slice(0, 1400);
+  const errors: string[] = [];
 
-  let lastError = '';
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const response = await fetchWithTimeout(
-        url,
-        { headers: { 'User-Agent': 'entendiendocosas-bot/1.0' } },
-        90_000
-      );
-      if (response.ok) {
-        const type = response.headers.get('content-type') || '';
-        if (type.startsWith('image/')) {
-          const buffer = Buffer.from(await response.arrayBuffer());
-          return { imageUrl: await toDataUrl(buffer, type), provider: 'pollinations', model };
+  return withImageSlot(async () => {
+    for (let pass = 0; pass < 2; pass++) {
+      for (const model of pollinationsModels()) {
+        const url =
+          `${imageBase}/${encodeURIComponent(shortPrompt)}` +
+          `?width=1200&height=900&model=${encodeURIComponent(model)}&nologo=true&seed=${seed}`;
+        try {
+          const response = await fetchWithTimeout(
+            url,
+            { headers: { 'User-Agent': 'entendiendocosas-bot/1.0' } },
+            75_000
+          );
+          if (response.ok) {
+            const type = response.headers.get('content-type') || '';
+            if (type.startsWith('image/')) {
+              const buffer = Buffer.from(await response.arrayBuffer());
+              return { imageUrl: await toDataUrl(buffer, type), provider: 'pollinations', model };
+            }
+            errors.push(`${model}: contenido ${type || 'desconocido'}`);
+          } else {
+            errors.push(`${model}: ${response.status}`);
+          }
+        } catch (err: any) {
+          errors.push(`${model}: ${err?.message || err}`);
         }
-      } else if (response.status === 402 || response.status === 429 || response.status >= 500) {
-        lastError = `Pollinations ${response.status}`;
-        await sleep(2000 * (attempt + 1));
-        continue;
-      } else {
-        lastError = `Pollinations ${response.status}`;
-        break;
       }
-    } catch (err: any) {
-      lastError = err?.message || String(err);
+      if (pass === 0) await sleep(12_000);
     }
-  }
-  throw new Error(lastError || 'Pollinations no devolvió una imagen');
+    throw new Error(errors.join(' | ') || 'Pollinations no devolvió una imagen');
+  });
 }
 
 function pickOpenRouterImage(message: any): string {

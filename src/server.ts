@@ -387,11 +387,13 @@ INVESTIGACIÓN:
 ${research.context || 'Sin noticias en vivo disponibles; usa temas generales de actualidad.'}
 
 Para cada tendencia entrega:
-- topic: El nombre exacto de la tendencia
-- hashtag: El hashtag estándar para X que comience con # y sin espacios
+- topic: El nombre exacto de la tendencia (sin numeración)
+- hashtag: Un hashtag válido para X: empieza con #, sin espacios ni acentos (ej. #DiaDelNovio)
 - category: Categoría
-- postsCount: Volumen estimado o menciones
-- summary: Una frase corta (máximo 15 palabras) explicando por qué es tendencia hoy.
+- postsCount: Si no tienes un dato real, escribe exactamente "Tendencia". No inventes cifras.
+- summary: Una frase corta (máximo 15 palabras) explicando por qué es tendencia hoy, basada en la investigación.
+
+Entrega entre 10 y 12 tendencias, sin repetir temas.
 
 DEVUELVE ÚNICAMENTE UN ARRAY JSON con esta estructura exacta:
 [
@@ -419,15 +421,35 @@ DEVUELVE ÚNICAMENTE UN ARRAY JSON con esta estructura exacta:
 
       const parsed = extractJsonArray(text, ['trends', 'tendencias', 'items', 'results', 'data']);
       if (parsed && parsed.length > 0) {
-        const mapped = parsed.map((item: any) => ({
-          topic: String(item.topic || '').trim(),
-          hashtag: item.hashtag?.startsWith('#') ? item.hashtag.trim() : `#${String(item.hashtag || item.topic || '').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_]/g, '')}`,
-          category: String(item.category || 'Tendencia').trim(),
-          postsCount: String(item.postsCount || 'Tendencia').trim(),
-          summary: String(item.summary || '').trim()
-        }));
-        res.json({ trends: mapped });
-        return;
+        const seen = new Set<string>();
+        const mapped = parsed
+          .map((item: any) => {
+            const topic = String(item.topic || '').replace(/^\d+[.)\s-]+/, '').trim();
+            const rawTag = String(item.hashtag || topic)
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .replace(/[^a-zA-Z0-9_]/g, '');
+            return {
+              topic,
+              hashtag: rawTag ? `#${rawTag}` : '',
+              category: String(item.category || 'Tendencia').trim(),
+              postsCount: String(item.postsCount || 'Tendencia').trim(),
+              summary: String(item.summary || '').trim()
+            };
+          })
+          .filter(t => {
+            const key = t.topic.toLowerCase();
+            if (!t.topic || !t.hashtag || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .slice(0, 12);
+
+        if (mapped.length >= 3) {
+          res.json({ trends: mapped });
+          return;
+        }
+        console.warn('Tendencias insuficientes:', mapped.length);
       }
     } catch (err: any) {
       console.warn('Aviso buscando tendencias:', err?.message || err);

@@ -194,8 +194,12 @@ async function callProvider(p: Provider, messages: ChatMessage[], opts: ChatOpti
       model: p.model,
       messages,
       stream: false,
-      options: { temperature }
+      options: {
+        temperature,
+        num_ctx: Number(env('OLLAMA_NUM_CTX')) || 8192
+      }
     };
+    if (opts.maxTokens) (body.options as Record<string, unknown>).num_predict = opts.maxTokens;
     if (opts.json) body.format = 'json';
     const r = await fetchWithTimeout(
       `${p.baseUrl}/api/chat`,
@@ -217,6 +221,9 @@ async function callProvider(p: Provider, messages: ChatMessage[], opts: ChatOpti
 
   if (p.name === 'pollinations') {
     body.reasoning_effort = opts.reasoningEffort || env('POLLINATIONS_REASONING_EFFORT') || 'low';
+  }
+  if (p.name === 'groq' && /gpt-oss/i.test(p.model)) {
+    body.reasoning_effort = opts.reasoningEffort || env('GROQ_REASONING_EFFORT') || 'low';
   }
   if (p.name === 'openrouter') {
     body.provider = { allow_fallbacks: false, data_collection: 'deny' };
@@ -266,6 +273,7 @@ export async function chatComplete(
           if (opts.validate && !opts.validate(text)) {
             throw new Error('respuesta inválida (no cumple el formato esperado)');
           }
+          console.log(`[ai] respuesta de ${p.name} (${p.model}), ${text.length} chars`);
           return { text, provider: p.name, model: p.model };
         }
         throw new Error('respuesta vacía');
