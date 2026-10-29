@@ -9,6 +9,7 @@ export interface ChatOptions {
   json?: boolean;
   timeoutMs?: number;
   reasoningEffort?: 'low' | 'medium' | 'high';
+  validate?: (text: string) => boolean;
 }
 
 interface Provider {
@@ -125,7 +126,7 @@ async function resolveProviders(): Promise<Provider[]> {
       name: 'groq',
       kind: 'openai-compatible',
       baseUrl: 'https://api.groq.com/openai/v1',
-      model: env('GROQ_MODEL') || 'llama-3.3-70b-versatile',
+      model: env('GROQ_MODEL') || 'openai/gpt-oss-20b',
       apiKey: groqKey
     };
   }
@@ -136,7 +137,7 @@ async function resolveProviders(): Promise<Provider[]> {
       name: 'openrouter',
       kind: 'openai-compatible',
       baseUrl: 'https://openrouter.ai/api/v1',
-      model: env('OPENROUTER_MODEL') || 'meta-llama/llama-3.3-70b-instruct:free',
+      model: env('OPENROUTER_MODEL') || 'google/gemma-4-26b-a4b-it:free',
       apiKey: openrouterKey,
       extraHeaders: {
         'HTTP-Referer': env('OPENROUTER_SITE_URL') || 'https://entendiendocosas.lat',
@@ -233,7 +234,15 @@ async function callProvider(p: Provider, messages: ChatMessage[], opts: ChatOpti
     }
     if (!r.ok) throw new HttpError(r.status, (await r.text()).slice(0, 500));
     const data: any = await r.json();
-    return String(data?.choices?.[0]?.message?.content || '');
+    const msg = data?.choices?.[0]?.message || {};
+    let content = String(msg.content || '');
+    if (!content.trim() && typeof msg.reasoning === 'string' && msg.reasoning.trim()) {
+      content = msg.reasoning;
+    }
+    if (!content.trim() && typeof msg.reasoning_content === 'string') {
+      content = msg.reasoning_content;
+    }
+    return content;
   };
 
   return p.name === 'pollinations' ? withPollinationsSlot(execute) : execute();
@@ -254,13 +263,17 @@ export async function chatComplete(
       try {
         const text = await callProvider(p, messages, opts);
         if (text.trim()) {
+          if (opts.validate && !opts.validate(text)) {
+            throw new Error('respuesta inválida (no cumple el formato esperado)');
+          }
           return { text, provider: p.name, model: p.model };
         }
         throw new Error('respuesta vacía');
       } catch (err: any) {
         const status = typeof err?.status === 'number' ? err.status : 0;
         const isFreeLimit = status === 402 || status === 429;
-        const retriable = isFreeLimit || status >= 500 || !status;
+        const invalidFormat = String(err?.message || '').includes('inválida');
+        const retriable = !invalidFormat && (isFreeLimit || status >= 500 || !status);
         if (retriable && attempt < 2) {
           const waitMs = isFreeLimit
             ? pollinationsMinInterval() + 2_000

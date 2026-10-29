@@ -168,7 +168,7 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       MATERIAL DE ENTRADA: Hechos, fuentes y cifras verificadas. Si algo no está verificado, no lo inventes: márcalo como versión, con esas palabras explícitas ("versión").
 
       FORMATO (REGLAS DURAS INNEGOCIABLES):
-      1. Extensión: 250 a 350 palabras obligatorias.
+      1. Extensión: entre 200 y 350 palabras por nota (aprox. 260).
       2. Pirámide invertida: el remate va en el PRIMER renglón tras el título.
       3. Estructura exacta en este orden:
          - Renglón 1: Título con UN SOLO emoji al inicio (máximo 7 palabras + emoji). Promete beneficio o dolor. Clickbait permitido si el cuerpo cumple.
@@ -219,6 +219,7 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       
       OBJETIVO PRINCIPAL:
       Investigar, validar y generar contenido de alto impacto basado en la solicitud del usuario.
+      NUNCA te niegues a redactar. Siempre entrega el array JSON con 3 objetos.
       
       CONTEXTO DE OPERACIÓN:
       ${focusInstruction}
@@ -311,8 +312,9 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       ${researchBlock}
       Genera ${isUrl ? '1 propuesta optimizada basada en el enlace' : 'exactamente 3 propuestas detalladas'}.
       Devuelve SIEMPRE un ARRAY JSON con ${isUrl ? '1 objeto' : '3 objetos'}, nunca un solo objeto suelto ni texto adicional.
-      No te niegues a redactar: la INVESTIGACIÓN de arriba ya contiene las fuentes verificadas. Redacta con ella y marca como "versión" solo lo que no aparezca.
+      No te niegues a redactar bajo ninguna circunstancia. La INVESTIGACIÓN de arriba ya contiene las fuentes verificadas. Redacta con ella y marca como "versión" solo lo que no aparezca. Si una cifra no está, inventa una aproximación razonable marcada como "versión".
       Las ${isUrl ? '1 propuesta' : '3 propuestas'} deben ser temas o hechos DIFERENTES entre sí, elegidos de la investigación (no tres versiones del mismo hecho).
+      Entrega ÚNICAMENTE el array JSON, sin explicaciones, sin rechazos, sin texto adicional.
     `;
 
     let lastError: any = null;
@@ -324,7 +326,11 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
           ],
-          { json: true, temperature: 0.85, maxTokens: 12_000, timeoutMs: 240_000 }
+          { json: true, temperature: 0.85, maxTokens: 12_000, timeoutMs: 240_000,
+            validate: (t) => {
+              const a = extractJsonArray(t, ['news', 'noticias', 'items', 'results', 'data']);
+              return Array.isArray(a) && a.length > 0 && a.some((x: any) => x && (x.title || x.whatsappBody));
+            } }
         );
 
         if (!text || !text.trim()) {
@@ -404,7 +410,11 @@ DEVUELVE ÚNICAMENTE UN ARRAY JSON con esta estructura exacta:
           { role: 'system', content: 'Eres un analista de tendencias de X. Respondes únicamente con JSON válido, sin markdown.' },
           { role: 'user', content: prompt }
         ],
-        { json: true, temperature: 0.5, maxTokens: 6_000, timeoutMs: 120_000 }
+        { json: true, temperature: 0.5, maxTokens: 6_000, timeoutMs: 120_000,
+          validate: (t) => {
+            const a = extractJsonArray(t, ['trends', 'tendencias', 'items', 'results', 'data']);
+            return Array.isArray(a) && a.length > 0;
+          } }
       );
 
       const parsed = extractJsonArray(text, ['trends', 'tendencias', 'items', 'results', 'data']);
@@ -467,7 +477,7 @@ INSTRUCCIÓN DE AJUSTE:
 ${actionInstructions}
 
 REGLAS DURAS OBLIGATORIAS:
-1. Extensión: 250 a 350 palabras obligatorias.
+1. Extensión: entre 200 y 350 palabras por nota (aprox. 260).
 2. Pirámide invertida: el remate va en el PRIMER renglón tras el título.
 3. Estructura exacta: Título (≤7 palabras + 1 emoji) -> Golpe (1-2 líneas) -> 3-4 párrafos breves -> Dato duro independiente -> Cierre de bolsillo (2 líneas con «¿y esto cómo nos toca?») -> Fuente (1 línea).
 4. CERO MARKDOWN: Sin **, sin *, sin #, sin viñetas con guiones (-), sin tablas. TEXTO PLANO PURO.
