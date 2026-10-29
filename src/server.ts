@@ -260,9 +260,10 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       Investigar, validar y generar contenido de alto impacto basado en la solicitud del usuario.
       NUNCA te niegues a redactar. Siempre entrega el array JSON con 3 objetos.
 
-      IDIOMA OBLIGATORIO: ESPAÑOL neutro de México.
-      TODO el contenido (título, nota de WhatsApp, copy de X, hashtags y prompts) debe estar escrito en ESPAÑOL.
-      Está prohibido responder en inglés.
+      IDIOMA OBLIGATORIO:
+      - Título, nota de WhatsApp, copy de X y hashtags: ESPAÑOL neutro de México.
+      - imagePrompt y videoPrompt: INGLÉS técnico (son para generadores de imagen y video).
+      - Nunca respondas en inglés fuera de esos dos campos.
       
       CONTEXTO DE OPERACIÓN:
       ${focusInstruction}
@@ -304,24 +305,24 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       - Todo en una sola línea de texto separada por espacios.
 
       REGLAS PARA EL PROMPT DE IMAGEN (ESTILO EDITORIAL "ENTENDIENDO COSAS" 4:3):
-      - El campo 'imagePrompt' DEBE estar en ESPAÑOL y describir con fidelidad la identidad visual:
-        * FORMATO Y COMPOSICIÓN: proporción 4:3, alta resolución, composición clara, legible en celular y escritorio.
-        * ZONA SUPERIOR: el titular exacto en tipografía serif grande, elegante e impactante, con márgenes generosos. Saltos de línea naturales, con una frase o palabra clave resaltada en rojo bermellón (#E34234) y el resto en negro tinta sumi.
-        * ILUSTRACIÓN DOMINANTE: la ilustración domina el resto de la imagen. Una metáfora visual clara de la historia con 2 a 4 elementos protagonistas integrados en una sola escena coherente.
+      - El campo 'imagePrompt' DEBE estar estrictamente en INGLÉS siguiendo con fidelidad la identidad visual:
+        * FORMATO Y COMPOSICIÓN: Aspect ratio 4:3, high resolution, clear focal composition, legible on smartphone and desktop feeds.
+        * ZONA SUPERIOR: The exact headline in large bold, elegant, impactful serif typography with generous margins. Natural line breaks, with a key phrase or word highlighted in vermilion red (#E34234) and the rest in sumi ink black.
+        * ILUSTRACIÓN DOMINANTE: The illustration dominates the rest of the image. A clear conceptual visual metaphor of the core story using 2 to 4 key protagonist elements integrated into a single cohesive scene.
         * ESTÉTICA EDITORIAL JAPONESA VINTAGE:
-          - Fondo marfil cálido con textura sutil de papel artesanal envejecido.
-          - Negro tinta sumi y rojo bermellón como colores dominantes.
-          - Collage conceptual que combine grabados xilográficos vintage, recortes de papel y fotonontaje de impresión halftone.
-          - Líneas finas, sombras suaves, contraste marcado, mucho aire y espacio negativo (sin saturar).
+          - Warm ivory background with subtle aged handcrafted paper texture.
+          - Sumi ink black and vermilion red as dominant colors.
+          - Conceptual collage combining vintage woodblock engravings, paper cutouts, and halftone vintage print photo-montage.
+          - Fine linework, soft shadows, marked contrast, ample breathing room and negative space (no clutter).
         * ÚNICOS TEXTOS PERMITIDOS:
-          1. El titular exacto en la parte superior (una sola vez).
-          2. EXACTAMENTE UNA sola marca de agua en la esquina inferior derecha, directamente sobre el papel marfil: la dirección "entendiendocosas.lat" debe aparecer en una sola línea horizontal continua, con "entendiendo" en rojo bermellón (#E34234) seguido de "cosas.lat" en negro tinta sumi (#111111). Tipografía serif pequeña y sutil impresa sobre el papel, sin contenedor oscuro ni caja negra.
-          - REGLA CRÍTICA: la marca de agua se renderiza EXACTAMENTE UNA vez. Nunca la dupliques.
-          - ESTRICTAMENTE NINGÚN OTRO TEXTO.
+          1. The exact headline at the top (rendered only once).
+          2. EXACTLY ONE SINGLE WATERMARK in the lower right corner directly on the ivory paper background: the website address "entendiendocosas.lat" MUST appear together on a SINGLE horizontal line (continuous website URL on one line, never broken into two lines, never stacked). It features two distinct colors: the word "entendiendo" in vibrant vermilion red (#E34234) immediately followed on the exact same line by "cosas.lat" in solid sumi ink black (#111111). Small, subtle serif typography printed directly on the background paper, NO dark container, NO black box behind the watermark.
+          - CRITICAL ANTI-DUPLICATION RULE: Render this watermark EXACTLY ONCE. NEVER duplicate, clone, or stack the watermark. Do NOT print the website address twice.
+          - STRICTLY NO OTHER TEXT.
 
       REGLAS PARA EL PROMPT DE VIDEO:
-      - El campo 'videoPrompt' DEBE estar en ESPAÑOL, diseñado para IAs de video (Runway, Pika, Sora).
-      - Estilo: cinemático, enfoque en movimiento, con movimientos de cámara (toma de dron, paneo cercano, time-lapse).
+      - El campo 'videoPrompt' DEBE estar estrictamente en INGLÉS, diseñado para IAs de video (Runway, Pika, Sora).
+      - Estilo: Cinematic, Motion-focused, con movimientos de cámara (drone shot, close up pan, time-lapse).
       
       FORMATO DE SALIDA (JSON ARRAY ÚNICAMENTE):
       [
@@ -331,8 +332,8 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
           "whatsappBody": "Nota de WhatsApp de 250 a 350 palabras en TEXTO PLANO PURO SIN MARKDOWN",
           "twitterBody": "Artículo de divulgación amigable para X",
           "hashtags": "#Tema1 #Tema2 #Pais1 #Pais2 #Industria #EntendiendoCosas",
-          "imagePrompt": "Prompt de imagen en ESPAÑOL",
-          "videoPrompt": "Prompt de VIDEO en ESPAÑOL con movimientos de cámara",
+          "imagePrompt": "Prompt de imagen en INGLÉS",
+          "videoPrompt": "Prompt de VIDEO en INGLÉS con movimientos de cámara",
           "sourceUrl": "URL proporcionada o encontrada"
         }
       ]
