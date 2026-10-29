@@ -23,10 +23,6 @@ interface NewsItem {
   activeVersionIndex?: number;
   isAdjusting?: boolean;
   adjustmentError?: string;
-  // Feature 5: AI Cover Image Generation (1:1)
-  generatedImageUrl?: string;
-  isGeneratingImage?: boolean;
-  imageError?: string;
   // Feature: X Post Formats & Versioning
   twitterVersions?: { label: string; twitterBody: string }[];
   activeTwitterVersionIndex?: number;
@@ -670,71 +666,21 @@ interface NewsItem {
                    </button>
                 </div>
 
-                <!-- Prompt Blocks Section & AI Image Generation (Feature 5) -->
+                <!-- Prompt Blocks Section -->
                 <div class="grid gap-3">
-                   <!-- Image Prompt & AI Cover Generation -->
+                   <!-- Image Prompt -->
                    <div class="bg-neutral-900/50 rounded-lg border border-neutral-800 p-3 flex flex-col gap-3 group/prompt">
                       <div class="flex items-center justify-between">
                          <div class="flex items-center gap-2 text-rose-400">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                             </svg>
-                            <span class="text-xs font-bold tracking-wider uppercase">Imagen Editorial (4:3)</span>
+                            <span class="text-xs font-bold tracking-wider uppercase">Prompt de Imagen (4:3)</span>
                          </div>
-                         <span class="text-[10px] text-rose-200 bg-rose-950/70 border border-rose-700/60 px-2 py-0.5 rounded-full font-medium">Nano Banana 2.1</span>
+                         <span class="text-[10px] text-neutral-400 bg-neutral-800/70 border border-neutral-700 px-2 py-0.5 rounded-full font-medium">Solo prompt</span>
                       </div>
 
-                      <!-- AI Generated Cover Image Preview if present -->
-                      @if (item.generatedImageUrl) {
-                        <div class="relative rounded-xl overflow-hidden border border-rose-500/40 shadow-xl bg-black aspect-[4/3] max-w-full sm:max-w-[340px] mx-auto w-full group/cover">
-                           <img [src]="item.generatedImageUrl" alt="Póster editorial de la noticia" class="w-full h-full object-cover transition-transform duration-500 group-hover/cover:scale-105" />
-                           <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent flex flex-col justify-end p-3 gap-2">
-                              <div class="flex items-center justify-between">
-                                 <span class="text-[11px] font-semibold text-white/90 truncate max-w-[140px]">{{ item.title }}</span>
-                                 <span class="text-[10px] bg-rose-600 text-white font-bold px-1.5 py-0.5 rounded">NB 2.1 • 4:3</span>
-                              </div>
-                              <div class="grid grid-cols-2 gap-2">
-                                 <button
-                                   (click)="downloadImage(item.generatedImageUrl, item.title)"
-                                   class="px-2.5 py-1.5 bg-white hover:bg-neutral-200 text-black text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow">
-                                   <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                                   </svg>
-                                   Descargar
-                                 </button>
-                                 <button
-                                   [disabled]="item.isGeneratingImage"
-                                   (click)="generateImageForNews(itemIndex)"
-                                   class="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow">
-                                   🔄 Regenerar
-                                 </button>
-                              </div>
-                           </div>
-                        </div>
-                      } @else {
-                        <!-- Generate Cover Button -->
-                        <button
-                          [disabled]="item.isGeneratingImage"
-                          (click)="generateImageForNews(itemIndex)"
-                          class="w-full bg-gradient-to-r from-red-700 via-rose-700 to-amber-700 hover:from-red-600 hover:via-rose-600 hover:to-amber-600 disabled:opacity-40 text-white text-xs font-bold py-2.5 px-3 rounded-lg shadow-lg shadow-red-950/40 transition-all flex items-center justify-center gap-2">
-                          @if (item.isGeneratingImage) {
-                            <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-                            </svg>
-                            <span>Generando con Nano Banana 2.1...</span>
-                          } @else {
-                            <svg class="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                            </svg>
-                            <span>🎨 Generar Portada Editorial (Nano Banana 2.1)</span>
-                          }
-                        </button>
-                      }
-
-                      @if (item.imageError) {
-                        <p class="text-rose-400 text-[11px] bg-rose-950/40 p-2 rounded-lg border border-rose-800/50">{{ item.imageError }}</p>
-                      }
+                      <p class="text-[11px] text-neutral-400">Copia este prompt y genera la imagen en la herramienta que prefieras (Midjourney, DALL·E, Flux, etc.). La app ya no genera la portada.</p>
 
                       <!-- Prompt text & copy button -->
                       <div class="pt-2 border-t border-neutral-800/60">
@@ -1378,71 +1324,6 @@ export class AppComponent implements OnInit {
         return copy;
       });
     }
-  }
-
-  async generateImageForNews(itemIndex: number) {
-    const items = this.generatedNews();
-    const item = items[itemIndex];
-    if (!item || item.isGeneratingImage) return;
-
-    this.generatedNews.update(list => {
-      const copy = [...list];
-      copy[itemIndex] = {
-        ...copy[itemIndex],
-        isGeneratingImage: true,
-        imageError: undefined
-      };
-      return copy;
-    });
-
-    try {
-      const generatedImageUrl = await this.geminiService.generateCoverImage(
-        item.imagePrompt,
-        item.title,
-        item.category
-      );
-
-      this.generatedNews.update(list => {
-        const copy = [...list];
-        copy[itemIndex] = {
-          ...copy[itemIndex],
-          isGeneratingImage: false,
-          generatedImageUrl: generatedImageUrl,
-          imageError: undefined
-        };
-        return copy;
-      });
-    } catch (err: any) {
-      console.warn('Aviso al generar portada editorial:', err?.message || err);
-      let errorMsg = err?.message || 'No se pudo generar la portada con los modelos disponibles. Intenta de nuevo.';
-      if (typeof errorMsg === 'string' && (errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('permission'))) {
-        errorMsg = 'Tu API Key de Gemini actual no tiene habilitada la API de generación de imágenes (Nano Banana 2.1 / Gemini Image) en Google Cloud / AI Studio. Puedes copiar el prompt visual abajo para usarlo directamente en Midjourney o DALL-E.';
-      }
-
-      this.generatedNews.update(list => {
-        const copy = [...list];
-        copy[itemIndex] = {
-          ...copy[itemIndex],
-          isGeneratingImage: false,
-          imageError: errorMsg
-        };
-        return copy;
-      });
-    }
-  }
-
-  downloadImage(imageUrl: string, title: string) {
-    const cleanTitle = (title || 'portada-noticia')
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, '-')
-      .substring(0, 35);
-
-    const a = document.createElement('a');
-    a.href = imageUrl;
-    a.download = `${cleanTitle}-editorial-4x3.png`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
   }
 
   async loadXTrends() {

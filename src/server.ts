@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chatComplete, describeProviders } from './ai/llm';
 import { buildResearch, searchProviderStatus } from './ai/search';
-import { generateEditorialImage } from './ai/image';
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -55,6 +54,46 @@ function extractJsonArray(text: string, keys: string[]): any[] | null {
     return [data];
   }
   return null;
+}
+
+
+const ES_STOPWORDS = new Set([
+  'el','la','los','las','de','del','que','y','en','un','una','para','con','por','es','se','al','lo','como','mas','pero','sus','le','ya','o','este','si','porque','esta','entre','cuando','muy','sin','sobre','tambien','me','hasta','hay','donde','quien','desde','todo','nos','durante','todos','uno','les','ni','contra','otros','ese','eso','ante','ellos','esto','antes','algunos','unos','yo','otro','otras','otra','tanto','esa','estos','mucho','quienes','nada','muchos','cual','poco','ella','estar','estas','algunas','algo','nosotros','fue','son','ser','tiene','tienen','hace','hacen','puede','pueden','cada','otra','mismo','misma','nuestro','nuestra','mi','tu','su','nos','le','les'
+]);
+const EN_STOPWORDS = new Set([
+  'the','and','is','to','of','in','that','for','with','on','as','at','by','from','it','this','be','are','was','were','or','an','not','have','has','had','but','they','you','we','he','she','his','her','their','our','your','my','me','mine','us','them','these','those','will','would','can','could','should','about','into','than','then','there','here','what','which','who','when','where','why','how','all','any','more','most','some','such','only','also','just','very','been','being','because','while','after','before','over','under','again'
+]);
+
+function isMostlySpanish(text: string): boolean {
+  const clean = (text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const words = clean.match(/[a-z]+/g) || [];
+  if (words.length < 12) return true;
+  let es = 0;
+  let en = 0;
+  for (const word of words) {
+    if (ES_STOPWORDS.has(word)) es++;
+    else if (EN_STOPWORDS.has(word)) en++;
+  }
+  if (en <= 2) return true;
+  return es >= en * 1.5;
+}
+
+async function ensureSpanish(text: string, label: string): Promise<string> {
+  if (!text || !text.trim() || isMostlySpanish(text)) return text;
+  console.warn(`[idioma] ${label} salió en inglés; traduciendo al español`);
+  try {
+    const { text: translated } = await chatComplete(
+      [
+        { role: 'system', content: 'Eres traductor editorial. Traduce al español neutro de México conservando formato, emojis, saltos de línea y hashtags. Devuelve solo el texto traducido, sin explicaciones.' },
+        { role: 'user', content: text }
+      ],
+      { temperature: 0.2, maxTokens: 4_000, timeoutMs: 120_000 }
+    );
+    return translated.trim() || text;
+  } catch (err: any) {
+    console.warn(`[idioma] no se pudo traducir ${label}:`, err?.message || err);
+    return text;
+  }
 }
 
 function cleanWhatsAppText(text: string): string {
@@ -220,6 +259,10 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       OBJETIVO PRINCIPAL:
       Investigar, validar y generar contenido de alto impacto basado en la solicitud del usuario.
       NUNCA te niegues a redactar. Siempre entrega el array JSON con 3 objetos.
+
+      IDIOMA OBLIGATORIO: ESPAÑOL neutro de México.
+      TODO el contenido (título, nota de WhatsApp, copy de X, hashtags y prompts) debe estar escrito en ESPAÑOL.
+      Está prohibido responder en inglés.
       
       CONTEXTO DE OPERACIÓN:
       ${focusInstruction}
@@ -261,24 +304,24 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
       - Todo en una sola línea de texto separada por espacios.
 
       REGLAS PARA EL PROMPT DE IMAGEN (ESTILO EDITORIAL "ENTENDIENDO COSAS" 4:3):
-      - El campo 'imagePrompt' DEBE estar estrictamente en INGLÉS siguiendo con fidelidad la identidad visual:
-        * FORMATO Y COMPOSICIÓN: Aspect ratio 4:3, high resolution, clear focal composition, legible on smartphone and desktop feeds.
-        * ZONA SUPERIOR: The exact headline in large bold, elegant, impactful serif typography with generous margins. Natural line breaks, with a key phrase or word highlighted in vermilion red (#E34234) and the rest in sumi ink black.
-        * ILUSTRACIÓN DOMINANTE: The illustration dominates the rest of the image. A clear conceptual visual metaphor of the core story using 2 to 4 key protagonist elements integrated into a single cohesive scene.
+      - El campo 'imagePrompt' DEBE estar en ESPAÑOL y describir con fidelidad la identidad visual:
+        * FORMATO Y COMPOSICIÓN: proporción 4:3, alta resolución, composición clara, legible en celular y escritorio.
+        * ZONA SUPERIOR: el titular exacto en tipografía serif grande, elegante e impactante, con márgenes generosos. Saltos de línea naturales, con una frase o palabra clave resaltada en rojo bermellón (#E34234) y el resto en negro tinta sumi.
+        * ILUSTRACIÓN DOMINANTE: la ilustración domina el resto de la imagen. Una metáfora visual clara de la historia con 2 a 4 elementos protagonistas integrados en una sola escena coherente.
         * ESTÉTICA EDITORIAL JAPONESA VINTAGE:
-          - Warm ivory background with subtle aged handcrafted paper texture.
-          - Sumi ink black and vermilion red as dominant colors.
-          - Conceptual collage combining vintage woodblock engravings, paper cutouts, and halftone vintage print photo-montage.
-          - Fine linework, soft shadows, marked contrast, ample breathing room and negative space (no clutter).
+          - Fondo marfil cálido con textura sutil de papel artesanal envejecido.
+          - Negro tinta sumi y rojo bermellón como colores dominantes.
+          - Collage conceptual que combine grabados xilográficos vintage, recortes de papel y fotonontaje de impresión halftone.
+          - Líneas finas, sombras suaves, contraste marcado, mucho aire y espacio negativo (sin saturar).
         * ÚNICOS TEXTOS PERMITIDOS:
-          1. The exact headline at the top (rendered only once).
-          2. EXACTLY ONE SINGLE WATERMARK in the lower right corner directly on the ivory paper background: the website address "entendiendocosas.lat" MUST appear together on a SINGLE horizontal line (continuous website URL on one line, never broken into two lines, never stacked). It features two distinct colors: the word "entendiendo" in vibrant vermilion red (#E34234) immediately followed on the exact same line by "cosas.lat" in solid sumi ink black (#111111). Small, subtle serif typography printed directly on the background paper, NO dark container, NO black box behind the watermark.
-          - CRITICAL ANTI-DUPLICATION RULE: Render this watermark EXACTLY ONCE. NEVER duplicate, clone, or stack the watermark. Do NOT print the website address twice.
-          - STRICTLY NO OTHER TEXT.
+          1. El titular exacto en la parte superior (una sola vez).
+          2. EXACTAMENTE UNA sola marca de agua en la esquina inferior derecha, directamente sobre el papel marfil: la dirección "entendiendocosas.lat" debe aparecer en una sola línea horizontal continua, con "entendiendo" en rojo bermellón (#E34234) seguido de "cosas.lat" en negro tinta sumi (#111111). Tipografía serif pequeña y sutil impresa sobre el papel, sin contenedor oscuro ni caja negra.
+          - REGLA CRÍTICA: la marca de agua se renderiza EXACTAMENTE UNA vez. Nunca la dupliques.
+          - ESTRICTAMENTE NINGÚN OTRO TEXTO.
 
       REGLAS PARA EL PROMPT DE VIDEO:
-      - El campo 'videoPrompt' DEBE estar estrictamente en INGLÉS, diseñado para IAs de video (Runway, Pika, Sora).
-      - Estilo: Cinematic, Motion-focused, con movimientos de cámara (drone shot, close up pan, time-lapse).
+      - El campo 'videoPrompt' DEBE estar en ESPAÑOL, diseñado para IAs de video (Runway, Pika, Sora).
+      - Estilo: cinemático, enfoque en movimiento, con movimientos de cámara (toma de dron, paneo cercano, time-lapse).
       
       FORMATO DE SALIDA (JSON ARRAY ÚNICAMENTE):
       [
@@ -288,8 +331,8 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
           "whatsappBody": "Nota de WhatsApp de 250 a 350 palabras en TEXTO PLANO PURO SIN MARKDOWN",
           "twitterBody": "Artículo de divulgación amigable para X",
           "hashtags": "#Tema1 #Tema2 #Pais1 #Pais2 #Industria #EntendiendoCosas",
-          "imagePrompt": "Prompt de imagen en INGLÉS",
-          "videoPrompt": "Prompt de VIDEO en INGLÉS con movimientos de cámara",
+          "imagePrompt": "Prompt de imagen en ESPAÑOL",
+          "videoPrompt": "Prompt de VIDEO en ESPAÑOL con movimientos de cámara",
           "sourceUrl": "URL proporcionada o encontrada"
         }
       ]
@@ -344,12 +387,20 @@ app.post('/api/gemini/generate-news', async (req: Request, res: Response): Promi
         }
 
         if (parsedData && parsedData.length > 0) {
-          const cleanedNews = parsedData
-            .filter((item: any) => item && (item.title || item.whatsappBody))
-            .map((item: any) => ({
-              ...item,
-              whatsappBody: cleanWhatsAppText(item.whatsappBody || '')
-            }));
+          const validItems = parsedData.filter((item: any) => item && (item.title || item.whatsappBody));
+          const cleanedNews: any[] = [];
+          for (const item of validItems) {
+            let title = String(item.title || '').trim();
+            let wa = cleanWhatsAppText(item.whatsappBody || '');
+            let tw = String(item.twitterBody || '').trim();
+            if (!isMostlySpanish(`${title} ${wa}`)) {
+              wa = cleanWhatsAppText(await ensureSpanish(wa, 'whatsapp'));
+            }
+            if (tw && !isMostlySpanish(tw)) {
+              tw = await ensureSpanish(tw, 'twitter');
+            }
+            cleanedNews.push({ ...item, title, whatsappBody: wa, twitterBody: tw });
+          }
           if (cleanedNews.length > 0) {
             res.json({ news: cleanedNews });
             return;
@@ -486,7 +537,8 @@ app.post('/api/gemini/adjust-whatsapp', async (req: Request, res: Response): Pro
     }
 
     const prompt = `
-Eres el guionista de «Entendiendo Cosas». Conviertes una investigación en una nota corta para el canal de WhatsApp. Escribes para gente que trabaja en fábrica, obra o mostrador. No eres un medio: eres un vecino listo que explica lo que pasa y por qué le importa al bolsillo.
+Eres el guionista de «Entendiendo Cosas». Conviertes una investigación en una nota corta para el canal de WhatsApp.
+IDIOMA: español neutro de México. Nunca respondas en inglés. Escribes para gente que trabaja en fábrica, obra o mostrador. No eres un medio: eres un vecino listo que explica lo que pasa y por qué le importa al bolsillo.
 
 TEXTO ACTUAL DE REFERENCIA:
 """
@@ -511,12 +563,12 @@ Devuelve ÚNICAMENTE el texto final en texto plano.
 
     const { text } = await chatComplete(
       [
-        { role: 'system', content: 'Eres el guionista de «Entendiendo Cosas». Devuelves solo texto plano, sin markdown.' },
+        { role: 'system', content: 'Eres el guionista de «Entendiendo Cosas». Respondes SIEMPRE en español neutro de México, en texto plano, sin markdown.' },
         { role: 'user', content: prompt }
       ],
       { temperature: 0.8, maxTokens: 6_000, timeoutMs: 180_000 }
     );
-    res.json({ text: cleanWhatsAppText(text.trim()) });
+    res.json({ text: cleanWhatsAppText(await ensureSpanish(text.trim(), 'whatsapp')) });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Error ajustando WhatsApp.' });
   }
@@ -561,6 +613,7 @@ Separa cada parte con doble salto de línea claro.`;
 
     const prompt = `
 Eres un estratega editorial y creador de contenido de alto impacto en X (antes Twitter).
+IDIOMA: español neutro de México. Nunca respondas en inglés.
 Conviertes noticias y análisis en publicaciones con altísima retención (dwell time) y alto volumen de respuestas (replies).
 
 POST ACTUAL DE X DE REFERENCIA:
@@ -583,79 +636,14 @@ REGLAS OBLIGATORIAS:
 
     const { text } = await chatComplete(
       [
-        { role: 'system', content: 'Eres un estratega editorial de X. Devuelves solo el texto final listo para publicar.' },
+        { role: 'system', content: 'Eres un estratega editorial de X. Respondes SIEMPRE en español neutro de México. Devuelves solo el texto final listo para publicar.' },
         { role: 'user', content: prompt }
       ],
       { temperature: 0.75, maxTokens: 3_000, timeoutMs: 180_000 }
     );
-    res.json({ text: text.trim() });
+    res.json({ text: await ensureSpanish(text.trim(), 'twitter') });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Error ajustando post de X.' });
-  }
-});
-
-// 5. API: GENERAR PORTADA EDITORIAL (4:3)
-app.post('/api/gemini/generate-cover', async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { imagePrompt, title = '', category = '' } = req.body;
-
-    let cleanPrompt = (imagePrompt || '').trim();
-    cleanPrompt = cleanPrompt
-      .replace(/Watermark[:\s][^.]*\./gi, '')
-      .replace(/Watermark in (the )?(bottom|lower) right corner[^.]*\./gi, '')
-      .replace(/(The )?discreet watermark[^.]*\./gi, '')
-      .replace(/the website (address|domain) ["']?entendiendocosas\.lat["']?[^.]*\./gi, '')
-      .replace(/["']?entendiendocosas\.lat["']?[^.]*\./gi, '')
-      .replace(/CRITICAL ANTI-DUPLICATION RULE:[^.]*\./gi, '')
-      .replace(/STRICT ANTI-DUPLICATION RULE:[^.]*\./gi, '')
-      .replace(/STRICT ANTI-DUPLICATION:[^.]*\./gi, '')
-      .replace(/Only allowed texts:[^.]*\./gi, '')
-      .trim();
-
-    if (cleanPrompt && !cleanPrompt.endsWith('.')) {
-      cleanPrompt += '.';
-    }
-
-    let styleSupplement = '';
-    const lowerClean = cleanPrompt.toLowerCase();
-    if (!lowerClean.includes('japanese vintage editorial') && !lowerClean.includes('warm ivory')) {
-      styleSupplement = ' 4:3 aspect ratio editorial image for Entendiendo Cosas on WhatsApp and X. Japanese vintage editorial aesthetic, warm ivory subtle aged handcrafted paper texture, sumi ink black and vermilion red accents, conceptual collage of woodblock engravings, paper cutouts and halftone photo-montage with vintage print finish, high resolution, ample breathing room and negative space, clean composition.';
-    }
-
-    const singleWatermarkRule = ' Watermark: Render EXACTLY ONE single instance of the website address "entendiendocosas.lat" in the lower right corner on a single horizontal line directly on the ivory paper background, with "entendiendo" in vibrant vermilion red (#E34234) immediately followed on the exact same line by "cosas.lat" in solid sumi ink black (#111111). STRICT ANTI-DUPLICATION RULE: Render this watermark ONLY ONCE. NEVER duplicate, repeat, clone, or stack two watermarks. There must be exactly ONE occurrence of "entendiendocosas.lat" on the entire image. NO black banner or dark box behind the watermark.';
-
-    const fullPrompt = `${cleanPrompt}${styleSupplement}${singleWatermarkRule}`.trim();
-
-    try {
-      const result = await generateEditorialImage(fullPrompt);
-      if (result.imageUrl.startsWith('data:')) {
-        res.json({ imageUrl: result.imageUrl });
-        return;
-      }
-      if (result.imageUrl.startsWith('http')) {
-        const response = await fetch(result.imageUrl, { headers: { 'User-Agent': 'entendiendocosas-bot/1.0' } });
-        if (response.ok) {
-          const type = response.headers.get('content-type') || '';
-          if (type.startsWith('image/')) {
-            const buffer = Buffer.from(await response.arrayBuffer());
-            res.json({ imageUrl: `data:${type.split(';')[0]};base64,${buffer.toString('base64')}` });
-            return;
-          }
-        }
-      }
-    } catch (err: any) {
-      console.warn('Generación de portada falló:', err?.message || err);
-    }
-
-    res.json({
-      fallbackNeeded: true,
-      error: 'Generador de imágenes gratuito no disponible. Activando póster editorial local.'
-    });
-  } catch (err: any) {
-    res.json({
-      fallbackNeeded: true,
-      error: err?.message || 'Error en servidor generando imagen.'
-    });
   }
 });
 
@@ -669,11 +657,15 @@ app.get('/api/ai/status', async (_req: Request, res: Response): Promise<void> =>
       ollamaLocal: status.ollama,
       geminiActivo: process.env.AI_ALLOW_GEMINI === '1',
       busqueda: searchProviderStatus(),
-      imagenes: (process.env.IMAGE_PROVIDERS || 'pollinations').split(',').map(p => p.trim()).filter(Boolean)
+      imagenes: 'solo-prompt'
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'No se pudo consultar el estado.' });
   }
+});
+
+app.use('/api', (_req: Request, res: Response): void => {
+  res.status(404).json({ error: 'Endpoint no encontrado.' });
 });
 
 // Servir archivos estáticos del navegador para producción
