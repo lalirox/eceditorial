@@ -18,7 +18,15 @@ fi
 # 2) Servidor de la app (si no está corriendo)
 if ! curl -s --max-time 2 "http://127.0.0.1:${PORT}/api/ai/status" >/dev/null 2>&1; then
   cd "$APP_DIR"
+  NEEDS_BUILD=0
   if [ ! -f dist/server/server.mjs ]; then
+    NEEDS_BUILD=1
+  elif find src -type f -newer dist/server/server.mjs -print -quit 2>/dev/null | grep -q .; then
+    NEEDS_BUILD=1
+  elif [ index.html -nt dist/server/server.mjs ] || [ angular.json -nt dist/server/server.mjs ] || [ package.json -nt dist/server/server.mjs ]; then
+    NEEDS_BUILD=1
+  fi
+  if [ "$NEEDS_BUILD" = "1" ]; then
     "$NODE_BIN" node_modules/@angular/cli/bin/ng.js build >/tmp/ec-build.log 2>&1
   fi
   PORT="$PORT" nohup "$NODE_BIN" dist/server/server.mjs >/tmp/ec-server.log 2>&1 &
